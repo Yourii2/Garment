@@ -1,0 +1,530 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة أمر قص جديد
+if (isset($_POST['add_cutting_order'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $product_id = $_POST['product_id'];
+        $fabric_id = $_POST['fabric_id'];
+        $quantity = $_POST['quantity'];
+        $notes = $_POST['notes'] ?? '';
+        
+        // جلب بيانات المنتج
+        $stmt = $pdo->prepare("SELECT * FROM products WHERE id = ?");
+        $stmt->execute([$product_id]);
+        $product = $stmt->fetch();
+        
+        if (!$product) {
+            throw new Exception('المنتج غير موجود');
+        }
+        
+        // حساب القماش المطلوب
+        $fabric_needed = ($product['fabric_consumption'] ?? 1) * $quantity;
+        
+        // توليد رقم أمر القص المميز
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM cutting_orders");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $cutting_number = 'CUT' . date('Y') . date('m') . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        // إدراج أمر القص
+        $stmt = $pdo->prepare("
+            INSERT INTO cutting_orders 
+            (cutting_number, product_id, fabric_id, quantity_ordered, fabric_used, cutting_date, notes, created_by, status) 
+            VALUES (?, ?, ?, ?, ?, CURDATE(), ?, ?, 'active')
+        ");
+        $stmt->execute([$cutting_number, $product_id, $fabric_id, $quantity, $fabric_needed, $notes, $_SESSION['user_id']]);
+        
+        $cutting_order_id = $pdo->lastInsertId();
+        
+        // جلب مراحل التصنيع للمنتج وإنشاء مراحل الإنتاج
+        $stmt = $pdo->prepare("
+            SELECT ps.*, ms.name as stage_name, ms.cost_per_unit, ms.estimated_time_minutes
+            FROM product_stages ps
+            JOIN manufacturing_stages ms ON ps.stage_id = ms.id
+            WHERE ps.product_id = ?
+            ORDER BY ps.stage_order ASC
+        ");
+        $stmt->execute([$product_id]);
+        $product_stages = $stmt->fetchAll();
+        
+        $stages_created = 0;
+        
+        // إنشاء مراحل الإنتاج لأمر القص
+        if (!empty($product_stages)) {
+            foreach ($product_stages as $stage) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO production_stages 
+                    (cutting_order_id, stage_id, stage_order, quantity_required, status) 
+                    VALUES (?, ?, ?, ?, 'pending')
+                ");
+                $stmt->execute([
+                    $cutting_order_id, 
+                    $stage['stage_id'], 
+                    $stage['stage_order'] ?? 1, 
+                    $quantity
+                ]);
+                $stages_created++;
+            }
+        } else {
+            // إذا لم توجد مراحل للمنتج، إنشاء مرحلة افتراضية
+            $stmt = $pdo->prepare("
+                SELECT id FROM manufacturing_stages 
+                ORDER BY id ASC 
+                LIMIT 1
+            ");
+            $stmt->execute();
+            $default_stage = $stmt->fetch();
+            
+            if ($default_stage) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO production_stages 
+                    (cutting_order_id, stage_id, stage_order, quantity_required, status) 
+                    VALUES (?, ?, 1, ?, 'pending')
+                ");
+                $stmt->execute([$cutting_order_id, $default_stage['id'], $quantity]);
+                $stages_created = 1;
+            }
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم إنشاء أمر القص بنجاح: {$cutting_number} مع {$stages_created} مراحل تصنيع";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: cutting.php');
+    exit;
+}
+
+// جلب أوامر القص مع تفاصيل المراحل والكميات الفعلية
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            co.*,
+            p.name as product_name,
+            COALESCE(p.code, p.product_code, CONCAT('PRD', LPAD(p.id, 4, '0'))) as product_code,
+            ft.name as fabric_name,
+            u.full_name as created_by_name,
+            
+            -- إحصائيات المراحل
+            COUNT(DISTINCT ps.id) as total_stages,
+            SUM(CASE WHEN ps.status = 'completed' THEN 1 ELSE 0 END) as completed_stages,
+            SUM(CASE WHEN ps.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_stages,
+            SUM(CASE WHEN ps.status = 'paused' THEN 1 ELSE 0 END) as paused_stages,
+            
+            -- إحصائيات الكميات الفعلية
+            COALESCE(SUM(swa.quantity_assigned), 0) as total_assigned_quantity,
+            COALESCE(SUM(CASE WHEN swa.status = 'completed' THEN swa.quantity_completed ELSE 0 END), 0) as total_completed_quantity,
+            COALESCE(SUM(CASE WHEN swa.status IN ('in_progress', 'assigned') THEN swa.quantity_assigned ELSE 0 END), 0) as total_in_progress_quantity,
+            COALESCE(SUM(CASE WHEN swa.status = 'paused' THEN swa.quantity_assigned ELSE 0 END), 0) as total_paused_quantity,
+            
+            -- حساب التقدم العام بناءً على الكميات
+            CASE 
+                WHEN co.quantity_ordered > 0 AND SUM(CASE WHEN swa.status = 'completed' THEN swa.quantity_completed ELSE 0 END) > 0 THEN 
+                    ROUND((SUM(CASE WHEN swa.status = 'completed' THEN swa.quantity_completed ELSE 0 END) / co.quantity_ordered) * 100, 1)
+                ELSE 0 
+            END as overall_progress,
+            
+            -- تحديد حالة الأمر بناءً على الكميات
+            CASE 
+                WHEN SUM(CASE WHEN swa.status = 'completed' THEN swa.quantity_completed ELSE 0 END) >= co.quantity_ordered THEN 'completed'
+                WHEN SUM(CASE WHEN swa.status IN ('in_progress', 'assigned') THEN 1 ELSE 0 END) > 0 THEN 'in_progress'
+                WHEN SUM(CASE WHEN swa.status = 'paused' THEN 1 ELSE 0 END) > 0 THEN 'paused'
+                WHEN COUNT(DISTINCT ps.id) > 0 THEN 'pending'
+                ELSE 'new'
+            END as order_status
+            
+        FROM cutting_orders co
+        LEFT JOIN products p ON co.product_id = p.id
+        LEFT JOIN fabric_types ft ON co.fabric_id = ft.id
+        LEFT JOIN users u ON co.created_by = u.id
+        LEFT JOIN production_stages ps ON co.id = ps.cutting_order_id
+        LEFT JOIN stage_worker_assignments swa ON ps.id = swa.production_stage_id
+        WHERE co.status = 'active'
+        GROUP BY co.id
+        ORDER BY co.cutting_date DESC, co.id DESC
+    ");
+    $cutting_orders = $stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $cutting_orders = [];
+    $_SESSION['error_message'] = 'خطأ في جلب البيانات: ' . $e->getMessage();
+}
+
+// جلب المنتجات والأقمشة للنموذج
+try {
+    $products = $pdo->query("SELECT * FROM products WHERE is_active = 1 ORDER BY name")->fetchAll();
+    $fabrics = $pdo->query("SELECT * FROM fabric_types ORDER BY name")->fetchAll();
+} catch (Exception $e) {
+    $products = [];
+    $fabrics = [];
+}
+
+// إحصائيات سريعة - إصلاح حساب الكميات
+try {
+    // حساب الإحصائيات بشكل منفصل لتجنب التكرار
+    $stats_stmt = $pdo->query("
+        SELECT 
+            COUNT(*) as total_orders,
+            SUM(quantity_ordered) as total_quantity_ordered
+        FROM cutting_orders 
+        WHERE status = 'active'
+    ");
+    $basic_stats = $stats_stmt->fetch();
+    
+    // حساب الكميات المكتملة وقيد العمل والمعلقة
+    $work_stats_stmt = $pdo->query("
+        SELECT 
+            SUM(CASE WHEN swa.status = 'completed' THEN swa.quantity_completed ELSE 0 END) as total_completed,
+            SUM(CASE WHEN swa.status = 'in_progress' THEN swa.quantity_assigned ELSE 0 END) as total_in_progress,
+            SUM(CASE WHEN swa.status = 'assigned' THEN swa.quantity_assigned ELSE 0 END) as total_assigned,
+            SUM(CASE WHEN swa.status = 'paused' THEN swa.quantity_assigned ELSE 0 END) as total_paused
+        FROM cutting_orders co
+        JOIN production_stages ps ON co.id = ps.cutting_order_id
+        JOIN stage_worker_assignments swa ON ps.id = swa.production_stage_id
+        WHERE co.status = 'active'
+    ");
+    $work_stats = $work_stats_stmt->fetch();
+    
+    // دمج الإحصائيات
+    $quick_stats = [
+        'total_orders' => $basic_stats['total_orders'] ?? 0,
+        'total_quantity_ordered' => $basic_stats['total_quantity_ordered'] ?? 0,
+        'total_completed' => $work_stats['total_completed'] ?? 0,
+        'total_in_progress' => ($work_stats['total_in_progress'] ?? 0) + ($work_stats['total_assigned'] ?? 0),
+        'total_paused' => $work_stats['total_paused'] ?? 0
+    ];
+    
+    // تسجيل الإحصائيات للتحقق
+    error_log("الإحصائيات المصححة: " . json_encode($quick_stats));
+    
+} catch (Exception $e) {
+    $quick_stats = [
+        'total_orders' => 0,
+        'total_quantity_ordered' => 0,
+        'total_completed' => 0,
+        'total_in_progress' => 0,
+        'total_paused' => 0
+    ];
+    error_log("خطأ في الإحصائيات: " . $e->getMessage());
+}
+
+$page_title = 'مرحلة قص القماش';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/assets/css/style.css" rel="stylesheet">
+    <style>
+        .main-content { margin-top: 60px; }
+    </style>
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include '../includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-cut me-2"></i>مرحلة قص القماش
+                    </h1>
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addCuttingModal">
+                        <i class="fas fa-plus me-1"></i>إضافة أمر قص جديد
+                    </button>
+                </div>
+
+                <?php if (isset($_SESSION['success_message'])): ?>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <?= $_SESSION['success_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['success_message']); ?>
+                <?php endif; ?>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <!-- إحصائيات سريعة -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card text-white bg-primary">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">أوامر القص</h5>
+                                <h2><?= number_format($quick_stats['total_orders']) ?></h2>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-white bg-info">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">إجمالي الكمية</h5>
+                                <h2><?= number_format($quick_stats['total_quantity_ordered']) ?></h2>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="card text-white bg-success">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">مكتملة</h5>
+                                <h2><?= number_format($quick_stats['total_completed']) ?></h2>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="card text-white bg-warning">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">قيد العمل</h5>
+                                <h2><?= number_format($quick_stats['total_in_progress']) ?></h2>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="card text-white bg-danger">
+                            <div class="card-body text-center">
+                                <h5 class="card-title">معلقة</h5>
+                                <h2><?= number_format($quick_stats['total_paused']) ?></h2>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- جدول أوامر القص -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-list me-2"></i>أوامر القص ومراحل الإنتاج
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>رقم الأمر</th>
+                                        <th>المنتج</th>
+                                        <th>القماش</th>
+                                        <th>الكمية</th>
+                                        <th>المراحل</th>
+                                        <th>التقدم العام</th>
+                                        <th>الحالة</th>
+                                        <th>الإجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if (empty($cutting_orders)): ?>
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted py-4">
+                                                <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                لا توجد أوامر قص مسجلة
+                                            </td>
+                                        </tr>
+                                    <?php else: ?>
+                                        <?php foreach ($cutting_orders as $order): ?>
+                                            <tr>
+                                                <td>
+                                                    <strong><?= htmlspecialchars($order['cutting_number']) ?></strong><br>
+                                                    <small class="text-muted"><?= date('Y-m-d', strtotime($order['cutting_date'])) ?></small>
+                                                </td>
+                                                <td>
+                                                    <strong><?= htmlspecialchars($order['product_name']) ?></strong><br>
+                                                    <small class="text-muted"><?= htmlspecialchars($order['product_code']) ?></small>
+                                                </td>
+                                                <td><?= htmlspecialchars($order['fabric_name']) ?></td>
+                                                <td>
+                                                    <span class="badge bg-primary"><?= number_format($order['quantity_ordered']) ?> قطعة</span>
+                                                </td>
+                                                <td class="stage-progress">
+                                                    <div class="mb-1">
+                                                        <span class="badge bg-success"><?= $order['completed_stages'] ?></span> مكتملة
+                                                        <span class="badge bg-warning"><?= $order['in_progress_stages'] ?></span> قيد العمل
+                                                        <span class="badge bg-secondary"><?= $order['total_stages'] - $order['completed_stages'] - $order['in_progress_stages'] ?></span> معلقة
+                                                    </div>
+                                                    <small class="text-muted">إجمالي: <?= $order['total_stages'] ?> مراحل</small>
+                                                </td>
+                                                <td>
+                                                    <div class="progress progress-bar-custom mb-1">
+                                                        <div class="progress-bar bg-success" style="width: <?= $order['overall_progress'] ?>%">
+                                                            <?= $order['overall_progress'] ?>%
+                                                        </div>
+                                                    </div>
+                                                    <?php if ($order['overall_progress'] >= 100): ?>
+                                                        <small class="text-success"><i class="fas fa-check"></i> مكتمل</small>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td>
+                                                    <?php
+                                                    $status_class = 'secondary';
+                                                    $status_text = 'جديد';
+                                                    
+                                                    // تحديد الحالة بناءً على البيانات
+                                                    if ($order['total_completed_quantity'] >= $order['quantity_ordered']) {
+                                                        $status_class = 'success';
+                                                        $status_text = 'مكتمل';
+                                                    } elseif ($order['total_in_progress_quantity'] > 0) {
+                                                        $status_class = 'primary';
+                                                        $status_text = 'قيد العمل';
+                                                    } elseif ($order['total_paused_quantity'] > 0) {
+                                                        $status_class = 'warning';
+                                                        $status_text = 'معلق';
+                                                    } elseif ($order['total_stages'] > 0) {
+                                                        $status_class = 'info';
+                                                        $status_text = 'في الانتظار';
+                                                    } else {
+                                                        $status_class = 'secondary';
+                                                        $status_text = 'جديد';
+                                                    }
+                                                    ?>
+                                                    <span class="badge bg-<?= $status_class ?>"><?= $status_text ?></span>
+                                                    <br><small class="text-muted"><?= $order['overall_progress'] ?>% مكتمل</small>
+                                                </td>
+                                                <td>
+                                                    <div class="btn-group" role="group">
+                                                        <button type="button" class="btn btn-sm btn-outline-info" 
+                                                                onclick="viewProductionStages(<?= $order['id'] ?>)">
+                                                            <i class="fas fa-tasks"></i> المراحل
+                                                        </button>
+                                                        <button type="button" class="btn btn-sm btn-outline-primary" 
+                                                                onclick="assignWorker(<?= $order['id'] ?>)">
+                                                            <i class="fas fa-user-plus"></i> توزيع
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- مودال إضافة أمر قص -->
+    <div class="modal fade" id="addCuttingModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">إضافة أمر قص جديد</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">المنتج</label>
+                                    <select name="product_id" class="form-select" required onchange="showProductStages(this.value)">
+                                        <option value="">اختر المنتج</option>
+                                        <?php foreach ($products as $product): ?>
+                                            <option value="<?= $product['id'] ?>">
+                                                <?= htmlspecialchars($product['name']) ?> (<?= htmlspecialchars($product['code']) ?>)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع القماش</label>
+                                    <select name="fabric_id" class="form-select" required>
+                                        <option value="">اختر القماش</option>
+                                        <?php foreach ($fabrics as $fabric): ?>
+                                            <option value="<?= $fabric['id'] ?>">
+                                                <?= htmlspecialchars($fabric['name']) ?> (متوفر: <?= $fabric['current_quantity'] ?> متر)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">الكمية المطلوب قصها</label>
+                            <input type="number" name="quantity" class="form-control" min="1" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">ملاحظات</label>
+                            <textarea name="notes" class="form-control" rows="3"></textarea>
+                        </div>
+                        
+                        <!-- عرض مراحل المنتج -->
+                        <div id="productStagesPreview" class="alert alert-info" style="display: none;">
+                            <h6><i class="fas fa-info-circle me-2"></i>مراحل التصنيع التي سيتم إنشاؤها:</h6>
+                            <div id="stagesList"></div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                        <button type="submit" name="add_cutting_order" class="btn btn-primary">
+                            <i class="fas fa-cut me-1"></i>إنشاء أمر القص
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    function viewProductionStages(cuttingOrderId) {
+        window.location.href = `production_stages_detail.php?cutting_order_id=${cuttingOrderId}`;
+    }
+    
+    function assignWorker(cuttingOrderId) {
+        window.location.href = `worker_assignment.php?cutting_order_id=${cuttingOrderId}`;
+    }
+    
+    function showProductStages(productId) {
+        if (!productId) {
+            document.getElementById('productStagesPreview').style.display = 'none';
+            return;
+        }
+        
+        fetch(`get_product_stages.php?product_id=${productId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.stages && data.stages.length > 0) {
+                    let stagesHtml = '<ol class="mb-0">';
+                    data.stages.forEach(stage => {
+                        stagesHtml += `<li>${stage.stage_name} (${stage.estimated_time_minutes} دقيقة)</li>`;
+                    });
+                    stagesHtml += '</ol>';
+                    
+                    document.getElementById('stagesList').innerHTML = stagesHtml;
+                    document.getElementById('productStagesPreview').style.display = 'block';
+                } else {
+                    document.getElementById('productStagesPreview').style.display = 'none';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('productStagesPreview').style.display = 'none';
+            });
+    }
+    </script>
+</body>
+</html>
+

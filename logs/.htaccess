@@ -1,0 +1,3 @@
+# منع الوصول المباشر لملفات اللوجات
+Order Deny,Allow
+Deny from all

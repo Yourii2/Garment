@@ -1,0 +1,413 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة تحديث حالة الطلبية
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    try {
+        $order_id = $_POST['order_id'];
+        $new_status = $_POST['new_status'];
+        $delivery_notes = $_POST['delivery_notes'] ?? '';
+        $amount_received = $_POST['amount_received'] ?? 0;
+        
+        $pdo->beginTransaction();
+        
+        // تحديث حالة الطلبية
+        if ($new_status === 'delivered') {
+            // تم التوصيل - إضافة المبلغ للخزينة
+            $stmt = $pdo->prepare("
+                UPDATE orders 
+                SET status = 'delivered', 
+                    delivery_notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ");
+            $stmt->execute([$delivery_notes, $order_id]);
+            
+            // إضافة المبلغ لخزينة المستخدم
+            if ($amount_received > 0) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO user_treasury (user_id, order_id, amount, type, description, created_at)
+                    VALUES (?, ?, ?, 'income', ?, CURRENT_TIMESTAMP)
+                ");
+                $stmt->execute([
+                    $_SESSION['user_id'], 
+                    $order_id, 
+                    $amount_received, 
+                    'تحصيل طلبية رقم: ' . $order_id
+                ]);
+            }
+            
+        } elseif ($new_status === 'returned') {
+            // مرتجع - إلغاء الطلبية
+            $stmt = $pdo->prepare("
+                UPDATE orders 
+                SET status = 'cancelled', 
+                    delivery_notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ");
+            $stmt->execute(['مرتجع: ' . $delivery_notes, $order_id]);
+            
+        } elseif ($new_status === 'postponed') {
+            // مؤجل - إرجاع للانتظار وإزالة المندوب
+            $stmt = $pdo->prepare("
+                UPDATE orders 
+                SET status = 'pending', 
+                    representative_id = NULL,
+                    delivery_notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ");
+            $stmt->execute(['مؤجل: ' . $delivery_notes, $order_id]);
+        }
+        
+        // إضافة سجل في تاريخ التوصيل
+        $stmt = $pdo->prepare("
+            INSERT INTO delivery_history (order_id, status, notes, created_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ");
+        $stmt->execute([$order_id, $new_status, $delivery_notes]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم تحديث حالة الطلبية بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: delivery_status.php');
+    exit;
+}
+
+// إنشاء جدول تاريخ التوصيل إذا لم يكن موجود
+try {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS delivery_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL,
+            status VARCHAR(50) NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_order_id (order_id)
+        )
+    ");
+    
+    // إضافة عمود delivery_notes لجدول orders إذا لم يكن موجود
+    $stmt = $pdo->query("SHOW COLUMNS FROM orders LIKE 'delivery_notes'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE orders ADD COLUMN delivery_notes TEXT AFTER notes");
+    }
+} catch (Exception $e) {
+    // الجدول موجود بالفعل
+}
+
+// جلب الطلبيات مع حساب الإجمالي
+$stmt = $pdo->query("
+    SELECT o.*, r.name as representative_name, r.phone as representative_phone,
+           COUNT(oi.id) as products_count,
+           SUM(oi.quantity) as total_quantity,
+           SUM(COALESCE(oi.quantity * oi.unit_price, 0)) as products_total,
+           COALESCE(o.shipping_cost, 0) as shipping_cost,
+           (SUM(COALESCE(oi.quantity * oi.unit_price, 0)) + COALESCE(o.shipping_cost, 0)) as order_total
+    FROM orders o
+    LEFT JOIN representatives r ON o.representative_id = r.id
+    LEFT JOIN order_items oi ON o.id = oi.order_id
+    WHERE o.representative_id IS NOT NULL 
+    AND o.status IN ('ready_for_delivery', 'out_for_delivery')
+    GROUP BY o.id
+    ORDER BY o.created_at DESC
+");
+$orders = $stmt->fetchAll();
+
+$page_title = 'حالة التوصيل';
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-clipboard-check me-2"></i>حالة التوصيل
+                </h1>
+                <div class="btn-toolbar mb-2 mb-md-0">
+                    <button class="btn btn-outline-secondary" onclick="location.reload()">
+                        <i class="fas fa-sync-alt me-1"></i>تحديث
+                    </button>
+                </div>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- إحصائيات سريعة -->
+            <div class="row mb-4">
+                <?php
+                $status_counts = [
+                    'ready_for_delivery' => 0,
+                    'out_for_delivery' => 0,
+                    'delivered' => 0,
+                    'returned' => 0
+                ];
+                
+                foreach ($orders as $order) {
+                    if (isset($status_counts[$order['status']])) {
+                        $status_counts[$order['status']]++;
+                    }
+                }
+                ?>
+                <div class="col-md-3">
+                    <div class="card text-center border-info">
+                        <div class="card-body">
+                            <h5 class="card-title text-info"><?= $status_counts['ready_for_delivery'] ?></h5>
+                            <p class="card-text">جاهز للتوصيل</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center border-warning">
+                        <div class="card-body">
+                            <h5 class="card-title text-warning"><?= $status_counts['out_for_delivery'] ?></h5>
+                            <p class="card-text">في الطريق</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center border-success">
+                        <div class="card-body">
+                            <h5 class="card-title text-success"><?= $status_counts['delivered'] ?></h5>
+                            <p class="card-text">تم التوصيل</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center border-danger">
+                        <div class="card-body">
+                            <h5 class="card-title text-danger"><?= $status_counts['returned'] ?></h5>
+                            <p class="card-text">مرتجع</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- قائمة الطلبيات -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>طلبيات التوصيل
+                        <span class="badge bg-primary ms-2"><?= count($orders) ?></span>
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($orders)): ?>
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                            لا توجد طلبيات للتوصيل
+                        </div>
+                    <?php else: ?>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>رقم الطلبية</th>
+                                        <th>العميل</th>
+                                        <th>الهاتف</th>
+                                        <th>العنوان</th>
+                                        <th>المندوب</th>
+                                        <th>عدد المنتجات</th>
+                                        <th>إجمالي المبلغ</th>
+                                        <th>الحالة الحالية</th>
+                                        <th>تاريخ الإنشاء</th>
+                                        <th>الإجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($orders as $order): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($order['order_number']) ?></td>
+                                            <td><?= htmlspecialchars($order['customer_name']) ?></td>
+                                            <td><?= htmlspecialchars($order['customer_phone']) ?></td>
+                                            <td>
+                                                <small class="text-muted">
+                                                    <?= htmlspecialchars($order['customer_address'] ?: 'غير محدد') ?>
+                                                </small>
+                                            </td>
+                                            <td>
+                                                <div>
+                                                    <strong><?= htmlspecialchars($order['representative_name']) ?></strong>
+                                                    <?php if ($order['representative_phone']): ?>
+                                                        <br><small class="text-muted"><?= htmlspecialchars($order['representative_phone']) ?></small>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <td><?= $order['products_count'] ?> (<?= $order['total_quantity'] ?>)</td>
+                                            <td>
+                                                <div>
+                                                    <strong class="text-success"><?= number_format($order['order_total'], 2) ?> ج.م</strong>
+                                                    <br><small class="text-muted">
+                                                        منتجات: <?= number_format($order['products_total'], 2) ?> ج.م
+                                                        <?php if ($order['shipping_cost'] > 0): ?>
+                                                            <br>شحن: <?= number_format($order['shipping_cost'], 2) ?> ج.م
+                                                        <?php endif; ?>
+                                                    </small>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <?php
+                                                $status_badges = [
+                                                    'ready_for_delivery' => 'bg-info',
+                                                    'out_for_delivery' => 'bg-warning'
+                                                ];
+                                                $status_text = [
+                                                    'ready_for_delivery' => 'جاهز للتوصيل',
+                                                    'out_for_delivery' => 'في الطريق'
+                                                ];
+                                                ?>
+                                                <span class="badge <?= $status_badges[$order['status']] ?? 'bg-secondary' ?>">
+                                                    <?= $status_text[$order['status']] ?? $order['status'] ?>
+                                                </span>
+                                            </td>
+                                            <td><?= date('Y-m-d', strtotime($order['created_at'])) ?></td>
+                                            <td>
+                                                <button type="button" class="btn btn-sm btn-primary" 
+                                                        onclick="updateStatus(<?= $order['id'] ?>, '<?= htmlspecialchars($order['order_number']) ?>', '<?= $order['status'] ?>', <?= $order['order_total'] ?>, <?= $order['products_total'] ?>, <?= $order['shipping_cost'] ?>)">
+                                                    تحديث الحالة
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal تحديث حالة الطلبية -->
+<div class="modal fade" id="updateStatusModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تحديث حالة الطلبية</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="order_id" id="modal_order_id">
+                <input type="hidden" name="order_total" id="modal_order_total">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">رقم الطلبية</label>
+                        <input type="text" id="modal_order_number" class="form-control" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الحالة الجديدة</label>
+                        <select name="new_status" id="modal_new_status" class="form-select" required onchange="toggleAmountField()">
+                            <option value="delivered">تم التوصيل</option>
+                            <option value="returned">مرتجع</option>
+                            <option value="postponed">مؤجل</option>
+                        </select>
+                    </div>
+                    <div class="mb-3" id="amount_field" style="display: none;">
+                        <label class="form-label">المبلغ المحصل <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <input type="number" name="amount_received" id="amount_received" class="form-control" 
+                                   step="0.01" min="0" placeholder="أدخل المبلغ المحصل">
+                            <span class="input-group-text">ج.م</span>
+                        </div>
+                        <div class="form-text">
+                            <div id="order_breakdown"></div>
+                            <small class="text-success">سيتم إضافة هذا المبلغ لخزينتك</small>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات التوصيل</label>
+                        <textarea name="delivery_notes" class="form-control" rows="3" 
+                                  placeholder="أضف ملاحظات حول حالة التوصيل..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="update_status" class="btn btn-primary">تحديث الحالة</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateStatus(orderId, orderNumber, currentStatus, orderTotal = 0, productsTotal = 0, shippingCost = 0) {
+    document.getElementById('modal_order_id').value = orderId;
+    document.getElementById('modal_order_number').value = orderNumber;
+    document.getElementById('modal_order_total').value = orderTotal;
+    document.getElementById('modal_new_status').value = 'delivered';
+    
+    // إظهار تفاصيل المبلغ
+    const breakdown = document.getElementById('order_breakdown');
+    if (orderTotal > 0) {
+        let breakdownHtml = `<strong>تفاصيل المبلغ:</strong><br>`;
+        breakdownHtml += `<span class="text-muted">منتجات: ${productsTotal.toFixed(2)} ج.م</span><br>`;
+        if (shippingCost > 0) {
+            breakdownHtml += `<span class="text-muted">شحن: ${shippingCost.toFixed(2)} ج.م</span><br>`;
+        }
+        breakdownHtml += `<span class="text-success"><strong>الإجمالي: ${orderTotal.toFixed(2)} ج.م</strong></span>`;
+        breakdown.innerHTML = breakdownHtml;
+    }
+    
+    toggleAmountField();
+    
+    const modal = new bootstrap.Modal(document.getElementById('updateStatusModal'));
+    modal.show();
+}
+
+function toggleAmountField() {
+    const statusSelect = document.getElementById('modal_new_status');
+    const amountField = document.getElementById('amount_field');
+    const amountInput = document.getElementById('amount_received');
+    
+    if (statusSelect.value === 'delivered') {
+        amountField.style.display = 'block';
+        amountInput.required = true;
+        // تعيين المبلغ الافتراضي من إجمالي الطلبية
+        const orderTotal = parseFloat(document.getElementById('modal_order_total').value) || 0;
+        if (orderTotal > 0) {
+            amountInput.value = orderTotal.toFixed(2);
+        }
+    } else {
+        amountField.style.display = 'none';
+        amountInput.required = false;
+        amountInput.value = '';
+    }
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
+
+
+
+
+
+
+
+

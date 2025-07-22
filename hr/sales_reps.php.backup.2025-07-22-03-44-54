@@ -1,0 +1,583 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة مندوب جديد
+if (isset($_POST['add_sales_rep'])) {
+    try {
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $payment_type = $_POST['payment_type'];
+        $salary_type = $_POST['salary_type'] ?? null;
+        $salary_amount = $_POST['salary_amount'] ?? 0;
+        $commission_type = $_POST['commission_type'] ?? null;
+        $commission_value = $_POST['commission_value'] ?? 0;
+        
+        $stmt = $pdo->prepare("INSERT INTO sales_reps (name, phone, email, address, payment_type, salary_type, salary_amount, commission_type, commission_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+        $result = $stmt->execute([$name, $phone, $email, $address, $payment_type, $salary_type, $salary_amount, $commission_type, $commission_value]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة المندوب بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sales_reps.php');
+    exit;
+}
+
+// معالجة تحديث مندوب
+if (isset($_POST['update_sales_rep'])) {
+    try {
+        $sales_rep_id = $_POST['sales_rep_id'];
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $payment_type = $_POST['payment_type'];
+        $salary_type = $_POST['salary_type'] ?? null;
+        $salary_amount = $_POST['salary_amount'] ?? 0;
+        $commission_type = $_POST['commission_type'] ?? null;
+        $commission_value = $_POST['commission_value'] ?? 0;
+        
+        $stmt = $pdo->prepare("UPDATE sales_reps SET name = ?, phone = ?, email = ?, address = ?, payment_type = ?, salary_type = ?, salary_amount = ?, commission_type = ?, commission_value = ? WHERE id = ?");
+        $stmt->execute([$name, $phone, $email, $address, $payment_type, $salary_type, $salary_amount, $commission_type, $commission_value, $sales_rep_id]);
+        
+        $_SESSION['success_message'] = 'تم تحديث المندوب بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sales_reps.php');
+    exit;
+}
+
+// معالجة حذف مندوب
+if (isset($_POST['delete_sales_rep'])) {
+    try {
+        $sales_rep_id = $_POST['sales_rep_id'];
+        
+        // التحقق من وجود مبيعات مرتبطة (إذا كان الجدول موجود)
+        $sales_count = 0;
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM sales WHERE sales_rep_id = ?");
+            $stmt->execute([$sales_rep_id]);
+            $sales_count = $stmt->fetchColumn();
+        } catch (Exception $e) {
+            // جدول المبيعات غير موجود، يمكن المتابعة
+            $sales_count = 0;
+        }
+        
+        if ($sales_count > 0) {
+            $_SESSION['error_message'] = 'لا يمكن حذف هذا المندوب لوجود مبيعات مرتبطة به';
+        } else {
+            $stmt = $pdo->prepare("DELETE FROM sales_reps WHERE id = ?");
+            $result = $stmt->execute([$sales_rep_id]);
+            
+            if ($result) {
+                $_SESSION['success_message'] = 'تم حذف المندوب بنجاح';
+            } else {
+                $_SESSION['error_message'] = 'فشل في حذف المندوب';
+            }
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sales_reps.php');
+    exit;
+}
+
+// جلب المناديب
+$stmt = $pdo->query("SELECT * FROM sales_reps ORDER BY id DESC");
+$sales_reps = $stmt->fetchAll();
+
+$page_title = 'إدارة المناديب';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">إدارة المناديب</h1>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addSalesRepModal">
+                    <i class="fas fa-plus me-2"></i>إضافة مندوب جديد
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>الاسم</th>
+                                    <th>الهاتف</th>
+                                    <th>البريد الإلكتروني</th>
+                                    <th>نسبة العمولة</th>
+                                    <th>تاريخ الإضافة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($sales_reps as $sales_rep): ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($sales_rep['name']) ?></td>
+                                        <td><?= htmlspecialchars($sales_rep['phone']) ?></td>
+                                        <td><?= htmlspecialchars($sales_rep['email']) ?></td>
+                                        <td>
+                                            <?php
+                                            $payment_types = [
+                                                'salary_only' => 'راتب فقط',
+                                                'commission_only' => 'عمولة فقط',
+                                                'salary_commission' => 'راتب + عمولة'
+                                            ];
+                                            echo $payment_types[$sales_rep['payment_type']] ?? $sales_rep['payment_type'];
+                                            ?>
+                                        </td>
+                                        <td>
+                                            <?php if ($sales_rep['payment_type'] != 'commission_only'): ?>
+                                                <?= number_format($sales_rep['salary_amount'], 2) ?> ج.م 
+                                                (<?php 
+                                                    $salary_types = ['daily' => 'يومي', 'weekly' => 'أسبوعي', 'monthly' => 'شهري'];
+                                                    echo $salary_types[$sales_rep['salary_type']] ?? $sales_rep['salary_type'];
+                                                ?>)
+                                            <?php endif; ?>
+                                            <?php if ($sales_rep['payment_type'] != 'salary_only'): ?>
+                                                <?php if ($sales_rep['payment_type'] != 'commission_only'): ?><br><?php endif; ?>
+                                                <?= number_format($sales_rep['commission_value'], 2) ?>
+                                                <?= $sales_rep['commission_type'] == 'percentage' ? '%' : ' ج.م' ?>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?= date('Y-m-d', strtotime($sales_rep['created_at'])) ?></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-info" onclick="viewSalesRep(<?= $sales_rep['id'] ?>)" title="عرض">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-warning" data-bs-toggle="modal" data-bs-target="#editSalesRepModal<?= $sales_rep['id'] ?>" title="تعديل">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteSalesRep(<?= $sales_rep['id'] ?>, '<?= addslashes($sales_rep['name']) ?>')" title="حذف">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة مندوب -->
+<div class="modal fade" id="addSalesRepModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة مندوب جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">الاسم</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الهاتف</label>
+                                <input type="text" class="form-control" name="phone">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" class="form-control" name="email">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea class="form-control" name="address" rows="2"></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">نوع الدفع</label>
+                        <select class="form-select" name="payment_type" id="payment_type_add" onchange="togglePaymentFields('add')" required>
+                            <option value="commission_only">عمولة فقط</option>
+                            <option value="salary_only">راتب فقط</option>
+                            <option value="salary_commission">راتب + عمولة</option>
+                        </select>
+                    </div>
+                    
+                    <div id="salary_fields_add" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع الراتب</label>
+                                    <select class="form-select" name="salary_type">
+                                        <option value="daily">يومي</option>
+                                        <option value="weekly">أسبوعي</option>
+                                        <option value="monthly">شهري</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">مبلغ الراتب</label>
+                                    <input type="number" step="0.01" class="form-control" name="salary_amount" value="0">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="commission_fields_add">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع العمولة</label>
+                                    <select class="form-select" name="commission_type">
+                                        <option value="percentage">نسبة مئوية</option>
+                                        <option value="fixed_amount">مبلغ ثابت</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">قيمة العمولة</label>
+                                    <input type="number" step="0.01" class="form-control" name="commission_value" value="0">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_sales_rep" class="btn btn-primary">إضافة</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تعديل مندوب -->
+<?php foreach ($sales_reps as $sales_rep): ?>
+<div class="modal fade" id="editSalesRepModal<?= $sales_rep['id'] ?>" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تعديل المندوب</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="sales_rep_id" value="<?= $sales_rep['id'] ?>">
+                    <div class="mb-3">
+                        <label class="form-label">الاسم</label>
+                        <input type="text" class="form-control" name="name" value="<?= htmlspecialchars($sales_rep['name']) ?>" required>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الهاتف</label>
+                                <input type="text" class="form-control" name="phone" value="<?= htmlspecialchars($sales_rep['phone']) ?>">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" class="form-control" name="email" value="<?= htmlspecialchars($sales_rep['email']) ?>">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea class="form-control" name="address" rows="2"><?= htmlspecialchars($sales_rep['address']) ?></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">نوع الدفع</label>
+                        <select class="form-select" name="payment_type" id="payment_type_edit_<?= $sales_rep['id'] ?>" onchange="togglePaymentFields('edit_<?= $sales_rep['id'] ?>')" required>
+                            <option value="commission_only" <?= $sales_rep['payment_type'] == 'commission_only' ? 'selected' : '' ?>>عمولة فقط</option>
+                            <option value="salary_only" <?= $sales_rep['payment_type'] == 'salary_only' ? 'selected' : '' ?>>راتب فقط</option>
+                            <option value="salary_commission" <?= $sales_rep['payment_type'] == 'salary_commission' ? 'selected' : '' ?>>راتب + عمولة</option>
+                        </select>
+                    </div>
+                    
+                    <div id="salary_fields_edit_<?= $sales_rep['id'] ?>" style="display: <?= ($sales_rep['payment_type'] == 'salary_only' || $sales_rep['payment_type'] == 'salary_commission') ? 'block' : 'none' ?>;">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع الراتب</label>
+                                    <select class="form-select" name="salary_type">
+                                        <option value="daily" <?= $sales_rep['salary_type'] == 'daily' ? 'selected' : '' ?>>يومي</option>
+                                        <option value="weekly" <?= $sales_rep['salary_type'] == 'weekly' ? 'selected' : '' ?>>أسبوعي</option>
+                                        <option value="monthly" <?= $sales_rep['salary_type'] == 'monthly' ? 'selected' : '' ?>>شهري</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">مبلغ الراتب</label>
+                                    <input type="number" step="0.01" class="form-control" name="salary_amount" value="<?= $sales_rep['salary_amount'] ?>">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="commission_fields_edit_<?= $sales_rep['id'] ?>" style="display: <?= ($sales_rep['payment_type'] == 'commission_only' || $sales_rep['payment_type'] == 'salary_commission') ? 'block' : 'none' ?>;">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع العمولة</label>
+                                    <select class="form-select" name="commission_type">
+                                        <option value="percentage" <?= $sales_rep['commission_type'] == 'percentage' ? 'selected' : '' ?>>نسبة مئوية</option>
+                                        <option value="fixed_amount" <?= $sales_rep['commission_type'] == 'fixed_amount' ? 'selected' : '' ?>>مبلغ ثابت</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">قيمة العمولة</label>
+                                    <input type="number" step="0.01" class="form-control" name="commission_value" value="<?= $sales_rep['commission_value'] ?>">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="update_sales_rep" class="btn btn-warning">تحديث</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
+
+<!-- Modal عرض تفاصيل المندوب -->
+<div class="modal fade" id="viewSalesRepModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تفاصيل المندوب: <span id="salesRepName"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">معلومات المندوب</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="salesRepDetails"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">إحصائيات المبيعات</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="salesRepStats"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-3">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">المبيعات الأخيرة</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>التاريخ</th>
+                                                <th>العميل</th>
+                                                <th>المبلغ</th>
+                                                <th>العمولة</th>
+                                                <th>الحالة</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="salesRepSales"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function viewSalesRep(salesRepId) {
+    fetch('get_sales_rep_details.php?id=' + salesRepId)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const salesRep = data.sales_rep;
+                
+                document.getElementById('salesRepName').textContent = salesRep.name;
+                
+                document.getElementById('salesRepDetails').innerHTML = `
+                    <p><strong>الاسم:</strong> ${salesRep.name}</p>
+                    <p><strong>الهاتف:</strong> ${salesRep.phone || 'غير محدد'}</p>
+                    <p><strong>البريد الإلكتروني:</strong> ${salesRep.email || 'غير محدد'}</p>
+                    <p><strong>العنوان:</strong> ${salesRep.address || 'غير محدد'}</p>
+                    <p><strong>نوع الدفع:</strong> ${getPaymentTypeText(salesRep.payment_type)}</p>
+                    ${salesRep.payment_type !== 'commission_only' ? `<p><strong>الراتب:</strong> ${parseFloat(salesRep.salary_amount || 0).toLocaleString()} ج.م (${getSalaryTypeText(salesRep.salary_type)})</p>` : ''}
+                    ${salesRep.payment_type !== 'salary_only' ? `<p><strong>العمولة:</strong> ${parseFloat(salesRep.commission_value || 0).toLocaleString()}${salesRep.commission_type === 'percentage' ? '%' : ' ج.م'}</p>` : ''}
+                    <p><strong>تاريخ الإضافة:</strong> ${salesRep.created_at}</p>
+                `;
+                
+                document.getElementById('salesRepStats').innerHTML = `
+                    <p><strong>إجمالي المبيعات:</strong> ${parseFloat(data.total_sales || 0).toLocaleString()} ج.م</p>
+                    <p><strong>عدد المبيعات:</strong> ${data.sales_count || 0}</p>
+                    <p><strong>إجمالي العمولات:</strong> ${parseFloat(data.total_commission || 0).toLocaleString()} ج.م</p>
+                    <p><strong>متوسط قيمة البيع:</strong> ${parseFloat(data.average_sale || 0).toLocaleString()} ج.م</p>
+                `;
+                
+                let salesHtml = '';
+                if (data.recent_sales && data.recent_sales.length > 0) {
+                    data.recent_sales.forEach(sale => {
+                        salesHtml += `
+                            <tr>
+                                <td>${sale.sale_date}</td>
+                                <td>${sale.customer_name || 'غير محدد'}</td>
+                                <td>${parseFloat(sale.total_amount).toLocaleString()} ج.م</td>
+                                <td>${parseFloat(sale.commission_amount || 0).toLocaleString()} ج.م</td>
+                                <td><span class="badge bg-${sale.status === 'completed' ? 'success' : 'warning'}">${getSaleStatusText(sale.status)}</span></td>
+                            </tr>
+                        `;
+                    });
+                } else {
+                    salesHtml = '<tr><td colspan="5" class="text-center">لا توجد مبيعات</td></tr>';
+                }
+                document.getElementById('salesRepSales').innerHTML = salesHtml;
+                
+                new bootstrap.Modal(document.getElementById('viewSalesRepModal')).show();
+            } else {
+                alert('خطأ: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('حدث خطأ في جلب البيانات');
+        });
+}
+
+function getSaleStatusText(status) {
+    const statuses = {
+        'pending': 'معلق',
+        'completed': 'مكتمل',
+        'cancelled': 'ملغي'
+    };
+    return statuses[status] || status;
+}
+
+function confirmDeleteSalesRep(salesRepId, salesRepName) {
+    if (confirm('هل أنت متأكد من حذف المندوب: ' + salesRepName + '؟\nسيتم حذف جميع البيانات المرتبطة به.')) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.innerHTML = `
+            <input type="hidden" name="delete_sales_rep" value="1">
+            <input type="hidden" name="sales_rep_id" value="${salesRepId}">
+        `;
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function togglePaymentFields(modalType) {
+    const paymentType = document.getElementById('payment_type_' + modalType).value;
+    const salaryFields = document.getElementById('salary_fields_' + modalType);
+    const commissionFields = document.getElementById('commission_fields_' + modalType);
+    
+    if (paymentType === 'salary_only') {
+        salaryFields.style.display = 'block';
+        commissionFields.style.display = 'none';
+    } else if (paymentType === 'commission_only') {
+        salaryFields.style.display = 'none';
+        commissionFields.style.display = 'block';
+    } else if (paymentType === 'salary_commission') {
+        salaryFields.style.display = 'block';
+        commissionFields.style.display = 'block';
+    }
+}
+
+function getPaymentTypeText(type) {
+    const types = {
+        'salary_only': 'راتب فقط',
+        'commission_only': 'عمولة فقط',
+        'salary_commission': 'راتب + عمولة'
+    };
+    return types[type] || type;
+}
+
+function getSalaryTypeText(type) {
+    const types = {
+        'daily': 'يومي',
+        'weekly': 'أسبوعي',
+        'monthly': 'شهري'
+    };
+    return types[type] || type;
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>

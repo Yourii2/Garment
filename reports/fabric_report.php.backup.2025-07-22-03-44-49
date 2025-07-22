@@ -1,0 +1,151 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير الأقمشة';
+
+// فلاتر
+$fabric_type = $_GET['fabric_type'] ?? '';
+$color = $_GET['color'] ?? '';
+
+// جلب بيانات الأقمشة
+$fabrics_data = [];
+$total_meters = 0;
+$total_value = 0;
+
+try {
+    $where_conditions = ["category = 'أقمشة'"];
+    $params = [];
+    
+    if ($fabric_type) {
+        $where_conditions[] = "item_name LIKE ?";
+        $params[] = "%$fabric_type%";
+    }
+    
+    if ($color) {
+        $where_conditions[] = "description LIKE ?";
+        $params[] = "%$color%";
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            item_name,
+            item_code,
+            description,
+            current_stock,
+            unit_price,
+            (current_stock * unit_price) as total_value,
+            minimum_stock,
+            supplier_name
+        FROM inventory_items 
+        WHERE $where_clause
+        ORDER BY item_name
+    ");
+    
+    $stmt->execute($params);
+    $fabrics_data = $stmt->fetchAll();
+    
+    foreach ($fabrics_data as $fabric) {
+        $total_meters += $fabric['current_stock'];
+        $total_value += $fabric['total_value'];
+    }
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات الأقمشة: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير الأقمشة</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">نوع القماش</label>
+                            <input type="text" class="form-control" name="fabric_type" value="<?= $fabric_type ?>" placeholder="قطن، حرير، إلخ">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">اللون</label>
+                            <input type="text" class="form-control" name="color" value="<?= $color ?>" placeholder="أحمر، أزرق، إلخ">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- إحصائيات -->
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <h4>إجمالي الأمتار</h4>
+                            <h2><?= number_format($total_meters, 2) ?> متر</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <h4>القيمة الإجمالية</h4>
+                            <h2><?= number_format($total_value, 2) ?> ج.م</h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول الأقمشة -->
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>كود القماش</th>
+                                    <th>اسم القماش</th>
+                                    <th>الوصف</th>
+                                    <th>الكمية (متر)</th>
+                                    <th>سعر المتر</th>
+                                    <th>القيمة الإجمالية</th>
+                                    <th>المورد</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($fabrics_data as $fabric): ?>
+                                <tr>
+                                    <td><?= $fabric['item_code'] ?></td>
+                                    <td><?= $fabric['item_name'] ?></td>
+                                    <td><?= $fabric['description'] ?></td>
+                                    <td><?= number_format($fabric['current_stock'], 2) ?></td>
+                                    <td><?= number_format($fabric['unit_price'], 2) ?> ج.م</td>
+                                    <td><?= number_format($fabric['total_value'], 2) ?> ج.م</td>
+                                    <td><?= $fabric['supplier_name'] ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>

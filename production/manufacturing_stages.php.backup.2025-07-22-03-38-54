@@ -1,0 +1,309 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة مرحلة جديدة
+if (isset($_POST['add_stage'])) {
+    try {
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        $estimated_time_minutes = $_POST['estimated_time_minutes'];
+        $cost_per_unit = $_POST['cost_per_unit'] ?? 0;
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO manufacturing_stages 
+            (name, description, estimated_time_minutes, cost_per_unit) 
+            VALUES (?, ?, ?, ?)
+        ");
+        $stmt->execute([$name, $description, $estimated_time_minutes, $cost_per_unit]);
+        
+        $_SESSION['success_message'] = 'تم إضافة المرحلة بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: manufacturing_stages.php');
+    exit;
+}
+
+// معالجة تحديث مرحلة
+if (isset($_POST['update_stage'])) {
+    try {
+        $id = $_POST['stage_id'];
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        $estimated_time_minutes = $_POST['estimated_time_minutes'];
+        $cost_per_unit = $_POST['cost_per_unit'] ?? 0;
+        
+        $stmt = $pdo->prepare("
+            UPDATE manufacturing_stages 
+            SET name = ?, description = ?, estimated_time_minutes = ?, cost_per_unit = ?
+            WHERE id = ?
+        ");
+        $stmt->execute([$name, $description, $estimated_time_minutes, $cost_per_unit, $id]);
+        
+        $_SESSION['success_message'] = 'تم تحديث المرحلة بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: manufacturing_stages.php');
+    exit;
+}
+
+// جلب جميع مراحل التصنيع
+try {
+    $stmt = $pdo->query("
+        SELECT ms.*, 
+               COUNT(DISTINCT ps.product_id) as products_count,
+               COUNT(DISTINCT swa.id) as assignments_count
+        FROM manufacturing_stages ms
+        LEFT JOIN product_stages ps ON ms.id = ps.stage_id
+        LEFT JOIN production_stages prs ON ms.id = prs.stage_id
+        LEFT JOIN stage_worker_assignments swa ON prs.id = swa.production_stage_id
+        GROUP BY ms.id
+        ORDER BY ms.name
+    ");
+    $stages = $stmt->fetchAll();
+} catch (Exception $e) {
+    $stages = [];
+    $_SESSION['error_message'] = 'خطأ في جلب البيانات: ' . $e->getMessage();
+}
+
+$page_title = 'مراحل التصنيع';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/assets/css/style.css" rel="stylesheet">
+    <style>
+        .main-content { margin-top: 60px; }
+    </style>
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include '../includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-cogs me-2"></i><?= $page_title ?>
+                    </h1>
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStageModal">
+                        <i class="fas fa-plus me-1"></i>إضافة مرحلة جديدة
+                    </button>
+                </div>
+
+                <?php if (isset($_SESSION['success_message'])): ?>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <?= $_SESSION['success_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['success_message']); ?>
+                <?php endif; ?>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <!-- جدول مراحل التصنيع -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-list me-2"></i>قائمة مراحل التصنيع
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>اسم المرحلة</th>
+                                        <th>الوصف</th>
+                                        <th>الوقت المقدر</th>
+                                        <th>التكلفة لكل وحدة</th>
+                                        <th>المنتجات المستخدمة</th>
+                                        <th>التخصيصات</th>
+                                        <th>الإجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if (empty($stages)): ?>
+                                        <tr>
+                                            <td colspan="7" class="text-center text-muted py-4">
+                                                <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                لا توجد مراحل تصنيع مسجلة
+                                            </td>
+                                        </tr>
+                                    <?php else: ?>
+                                        <?php foreach ($stages as $stage): ?>
+                                            <tr>
+                                                <td>
+                                                    <strong><?= htmlspecialchars($stage['name']) ?></strong>
+                                                </td>
+                                                <td>
+                                                    <?= htmlspecialchars($stage['description']) ?>
+                                                </td>
+                                                <td>
+                                                    <span class="badge bg-info"><?= $stage['estimated_time_minutes'] ?> دقيقة</span>
+                                                </td>
+                                                <td>
+                                                    <?php if ($stage['cost_per_unit'] > 0): ?>
+                                                        <span class="badge bg-success"><?= number_format($stage['cost_per_unit'], 2) ?> ج.م</span>
+                                                    <?php else: ?>
+                                                        <span class="text-muted">مجاني</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td>
+                                                    <span class="badge bg-primary"><?= $stage['products_count'] ?> منتج</span>
+                                                </td>
+                                                <td>
+                                                    <span class="badge bg-warning"><?= $stage['assignments_count'] ?> تخصيص</span>
+                                                </td>
+                                                <td>
+                                                    <div class="btn-group" role="group">
+                                                        <button type="button" class="btn btn-sm btn-outline-primary" 
+                                                                onclick="editStage(<?= htmlspecialchars(json_encode($stage)) ?>)">
+                                                            <i class="fas fa-edit"></i>
+                                                        </button>
+                                                        <button type="button" class="btn btn-sm btn-outline-info" 
+                                                                onclick="viewStageDetails(<?= $stage['id'] ?>)">
+                                                            <i class="fas fa-eye"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- مودال إضافة مرحلة -->
+    <div class="modal fade" id="addStageModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">إضافة مرحلة تصنيع جديدة</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">اسم المرحلة *</label>
+                            <input type="text" name="name" class="form-control" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">الوصف</label>
+                            <textarea name="description" class="form-control" rows="3"></textarea>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">الوقت المقدر (بالدقائق) *</label>
+                                    <input type="number" name="estimated_time_minutes" class="form-control" min="1" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">التكلفة لكل وحدة (ج.م)</label>
+                                    <input type="number" name="cost_per_unit" class="form-control" step="0.01" min="0" value="0">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                        <button type="submit" name="add_stage" class="btn btn-primary">
+                            <i class="fas fa-save me-1"></i>حفظ
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- مودال تعديل مرحلة -->
+    <div class="modal fade" id="editStageModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">تعديل مرحلة التصنيع</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <input type="hidden" name="stage_id" id="edit_stage_id">
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">اسم المرحلة *</label>
+                            <input type="text" name="name" id="edit_name" class="form-control" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">الوصف</label>
+                            <textarea name="description" id="edit_description" class="form-control" rows="3"></textarea>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">الوقت المقدر (بالدقائق) *</label>
+                                    <input type="number" name="estimated_time_minutes" id="edit_time" class="form-control" min="1" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">التكلفة لكل وحدة (ج.م)</label>
+                                    <input type="number" name="cost_per_unit" id="edit_cost" class="form-control" step="0.01" min="0">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                        <button type="submit" name="update_stage" class="btn btn-primary">
+                            <i class="fas fa-save me-1"></i>تحديث
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    function editStage(stage) {
+        document.getElementById('edit_stage_id').value = stage.id;
+        document.getElementById('edit_name').value = stage.name;
+        document.getElementById('edit_description').value = stage.description || '';
+        document.getElementById('edit_time').value = stage.estimated_time_minutes;
+        document.getElementById('edit_cost').value = stage.cost_per_unit;
+        
+        new bootstrap.Modal(document.getElementById('editStageModal')).show();
+    }
+    
+    function viewStageDetails(stageId) {
+        // يمكن إضافة صفحة تفاصيل المرحلة لاحق
+

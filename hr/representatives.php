@@ -1,0 +1,513 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة مندوب جديد
+if (isset($_POST['add_representative'])) {
+    try {
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $area = $_POST['area'] ?? '';
+        $payment_type = $_POST['payment_type'];
+        
+        // معالجة بيانات الراتب
+        $salary_type = null;
+        $salary_amount = 0;
+        if ($payment_type == 'salary_only' || $payment_type == 'salary_commission') {
+            $salary_type = $_POST['salary_type'];
+            $salary_amount = $_POST['salary_amount'] ?? 0;
+        }
+        
+        // معالجة بيانات العمولة
+        $commission_type = null;
+        $commission_value = 0;
+        if ($payment_type == 'commission_only' || $payment_type == 'salary_commission') {
+            $commission_type = $_POST['commission_type'];
+            $commission_value = $_POST['commission_value'] ?? 0;
+        }
+        
+        $stmt = $pdo->prepare("INSERT INTO representatives (name, phone, email, address, area, payment_type, salary_type, salary_amount, commission_type, commission_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())");
+        $result = $stmt->execute([$name, $phone, $email, $address, $area, $payment_type, $salary_type, $salary_amount, $commission_type, $commission_value]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة المندوب بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: representatives.php');
+    exit;
+}
+
+// معالجة التعديل
+if (isset($_POST['edit_representative'])) {
+    try {
+        $id = $_POST['representative_id'];
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $area = $_POST['area'] ?? '';
+        $payment_type = $_POST['payment_type'];
+        
+        // معالجة بيانات الراتب
+        $salary_type = null;
+        $salary_amount = 0;
+        if ($payment_type == 'salary_only' || $payment_type == 'salary_commission') {
+            $salary_type = $_POST['salary_type'];
+            $salary_amount = $_POST['salary_amount'] ?? 0;
+        }
+        
+        // معالجة بيانات العمولة
+        $commission_type = null;
+        $commission_value = 0;
+        if ($payment_type == 'commission_only' || $payment_type == 'salary_commission') {
+            $commission_type = $_POST['commission_type'];
+            $commission_value = $_POST['commission_value'] ?? 0;
+        }
+        
+        $stmt = $pdo->prepare("UPDATE representatives SET name = ?, phone = ?, email = ?, address = ?, area = ?, payment_type = ?, salary_type = ?, salary_amount = ?, commission_type = ?, commission_value = ? WHERE id = ?");
+        $result = $stmt->execute([$name, $phone, $email, $address, $area, $payment_type, $salary_type, $salary_amount, $commission_type, $commission_value, $id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم تحديث بيانات المندوب بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: representatives.php');
+    exit;
+}
+
+// معالجة الحذف
+if (isset($_POST['delete_representative'])) {
+    try {
+        $id = $_POST['representative_id'];
+        
+        $stmt = $pdo->prepare("DELETE FROM representatives WHERE id = ?");
+        $result = $stmt->execute([$id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم حذف المندوب بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: representatives.php');
+    exit;
+}
+
+// جلب المناديب
+$stmt = $pdo->query("SELECT * FROM representatives ORDER BY name ASC");
+$representatives = $stmt->fetchAll();
+
+$page_title = 'إدارة المناديب';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-user-friends text-primary me-2"></i>
+                    إدارة المناديب
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addRepresentativeModal">
+                    <i class="fas fa-plus me-2"></i>إضافة مندوب جديد
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>قائمة المناديب
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>الرقم</th>
+                                    <th>الاسم</th>
+                                    <th>الهاتف</th>
+                                    <th>البريد الإلكتروني</th>
+                                    <th>المنطقة</th>
+                                    <th>نسبة العمولة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($representatives)): ?>
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا توجد مناديب مسجلين
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($representatives as $rep): ?>
+                                        <tr>
+                                            <td><?= $rep['id'] ?></td>
+                                            <td><?= htmlspecialchars($rep['name']) ?></td>
+                                            <td><?= htmlspecialchars($rep['phone']) ?></td>
+                                            <td><?= htmlspecialchars($rep['email']) ?></td>
+                                            <td><?= htmlspecialchars($rep['area']) ?></td>
+                                            <td><?= $rep['commission_rate'] ?>%</td>
+                                            <td>
+                                                <button type="button" class="btn btn-sm btn-warning" 
+                                                        onclick="editRepresentative(<?= htmlspecialchars(json_encode($rep)) ?>)">
+                                                    <i class="fas fa-edit"></i>
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-danger" 
+                                                        onclick="deleteRepresentative(<?= $rep['id'] ?>, '<?= htmlspecialchars($rep['name']) ?>')">
+                                                    <i class="fas fa-trash"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة مندوب جديد -->
+<div class="modal fade" id="addRepresentativeModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-plus me-2"></i>إضافة مندوب جديد
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الاسم *</label>
+                                <input type="text" name="name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الهاتف</label>
+                                <input type="text" name="phone" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" name="email" class="form-control">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">المنطقة</label>
+                                <input type="text" name="area" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea name="address" class="form-control" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">نوع الدفع *</label>
+                        <select class="form-select" name="payment_type" id="payment_type_add" onchange="togglePaymentFields('add')" required>
+                            <option value="">اختر نوع الدفع</option>
+                            <option value="salary_only">راتب فقط</option>
+                            <option value="commission_only">عمولة فقط</option>
+                            <option value="salary_commission">راتب + عمولة</option>
+                        </select>
+                    </div>
+                    
+                    <!-- حقول الراتب -->
+                    <div id="salary_fields_add" style="display: none;">
+                        <div class="card border-primary mb-3">
+                            <div class="card-header bg-primary text-white">
+                                <h6 class="mb-0"><i class="fas fa-money-bill-wave me-2"></i>بيانات الراتب</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">نوع الراتب</label>
+                                            <select class="form-select" name="salary_type">
+                                                <option value="daily">يومي</option>
+                                                <option value="weekly">أسبوعي</option>
+                                                <option value="monthly">شهري</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">مبلغ الراتب</label>
+                                            <input type="number" step="0.01" class="form-control" name="salary_amount" value="0">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- حقول العمولة -->
+                    <div id="commission_fields_add" style="display: none;">
+                        <div class="card border-success mb-3">
+                            <div class="card-header bg-success text-white">
+                                <h6 class="mb-0"><i class="fas fa-percentage me-2"></i>بيانات العمولة</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">نوع العمولة</label>
+                                            <select class="form-select" name="commission_type">
+                                                <option value="percentage">نسبة مئوية (%)</option>
+                                                <option value="fixed_amount">مبلغ ثابت</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">قيمة العمولة</label>
+                                            <input type="number" step="0.01" class="form-control" name="commission_value" value="0">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_representative" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>حفظ
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تعديل مندوب -->
+<div class="modal fade" id="editRepresentativeModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-edit me-2"></i>تعديل بيانات المندوب
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="representative_id" id="edit_representative_id">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الاسم *</label>
+                                <input type="text" name="name" id="edit_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الهاتف</label>
+                                <input type="text" name="phone" id="edit_phone" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" name="email" id="edit_email" class="form-control">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">المنطقة</label>
+                                <input type="text" name="area" id="edit_area" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">نسبة العمولة (%)</label>
+                                <input type="number" name="commission_rate" id="edit_commission_rate" class="form-control" step="0.01">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea name="address" id="edit_address" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="edit_representative" class="btn btn-warning">
+                        <i class="fas fa-save me-2"></i>تحديث
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal حذف مندوب -->
+<div class="modal fade" id="deleteRepresentativeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>تأكيد الحذف
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>هل أنت متأكد من حذف المندوب: <strong id="delete_representative_name"></strong>؟</p>
+                <p class="text-danger">
+                    <i class="fas fa-warning me-2"></i>
+                    لا يمكن التراجع عن هذا الإجراء
+                </p>
+            </div>
+            <div class="modal-footer">
+                <form method="POST">
+                    <input type="hidden" name="representative_id" id="delete_representative_id">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="delete_representative" class="btn btn-danger">
+                        <i class="fas fa-trash me-2"></i>حذف
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function editRepresentative(rep) {
+    document.getElementById('edit_representative_id').value = rep.id;
+    document.getElementById('edit_name').value = rep.name;
+    document.getElementById('edit_phone').value = rep.phone || '';
+    document.getElementById('edit_email').value = rep.email || '';
+    document.getElementById('edit_area').value = rep.area || '';
+    document.getElementById('edit_commission_rate').value = rep.commission_rate || 0;
+    document.getElementById('edit_address').value = rep.address || '';
+    
+    new bootstrap.Modal(document.getElementById('editRepresentativeModal')).show();
+}
+
+function deleteRepresentative(id, name) {
+    document.getElementById('delete_representative_id').value = id;
+    document.getElementById('delete_representative_name').textContent = name;
+    
+    new bootstrap.Modal(document.getElementById('deleteRepresentativeModal')).show();
+}
+
+function togglePaymentFields(prefix) {
+    const paymentType = document.getElementById('payment_type_' + prefix).value;
+    const salaryFields = document.getElementById('salary_fields_' + prefix);
+    const commissionFields = document.getElementById('commission_fields_' + prefix);
+    
+    // إخفاء جميع الحقول أولاً
+    salaryFields.style.display = 'none';
+    commissionFields.style.display = 'none';
+    
+    // إظهار الحقول المطلوبة حسب نوع الدفع
+    if (paymentType === 'salary_only' || paymentType === 'salary_commission') {
+        salaryFields.style.display = 'block';
+    }
+    
+    if (paymentType === 'commission_only' || paymentType === 'salary_commission') {
+        commissionFields.style.display = 'block';
+    }
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
+    if (paymentType === 'salary_only' || paymentType === 'salary_commission') {
+        salaryFields.style.display = 'block';
+    }
+    
+    if (paymentType === 'commission_only' || paymentType === 'salary_commission') {
+        commissionFields.style.display = 'block';
+    }
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

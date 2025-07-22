@@ -1,0 +1,184 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير إنتاجية العمال';
+
+// فلاتر
+$start_date = $_GET['start_date'] ?? date('Y-m-01');
+$end_date = $_GET['end_date'] ?? date('Y-m-d');
+$worker_id = $_GET['worker_id'] ?? '';
+
+// جلب بيانات إنتاجية العمال
+$worker_productivity = [];
+
+try {
+    $where_conditions = ["DATE(wa.created_at) BETWEEN ? AND ?"];
+    $params = [$start_date, $end_date];
+    
+    if ($worker_id) {
+        $where_conditions[] = "w.id = ?";
+        $params[] = $worker_id;
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            w.id,
+            w.name as worker_name,
+            w.phone,
+            COUNT(wa.id) as total_assignments,
+            SUM(wa.quantity_assigned) as total_assigned,
+            SUM(wa.quantity_completed) as total_completed,
+            SUM(wa.quantity_defective) as total_defective,
+            AVG(CASE WHEN wa.status = 'completed' AND wa.completed_at IS NOT NULL 
+                THEN TIMESTAMPDIFF(HOUR, wa.started_at, wa.completed_at) END) as avg_completion_hours,
+            SUM(CASE WHEN wa.is_paid THEN wa.quantity_completed * wa.cost_per_unit ELSE 0 END) as total_earnings
+        FROM workers w
+        LEFT JOIN worker_assignments wa ON w.id = wa.worker_id
+        WHERE $where_clause
+        GROUP BY w.id, w.name, w.phone
+        HAVING total_assignments > 0
+        ORDER BY total_completed DESC
+    ");
+    
+    $stmt->execute($params);
+    $worker_productivity = $stmt->fetchAll();
+    
+    // جلب العمال للفلتر
+    $workers_stmt = $pdo->query("SELECT id, name FROM workers ORDER BY name");
+    $workers = $workers_stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات إنتاجية العمال: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير إنتاجية العمال</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">من تاريخ</label>
+                            <input type="date" class="form-control" name="start_date" value="<?= $start_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">إلى تاريخ</label>
+                            <input type="date" class="form-control" name="end_date" value="<?= $end_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">العامل</label>
+                            <select class="form-control" name="worker_id">
+                                <option value="">جميع العمال</option>
+                                <?php foreach ($workers as $worker): ?>
+                                <option value="<?= $worker['id'] ?>" <?= $worker_id == $worker['id'] ? 'selected' : '' ?>>
+                                    <?= $worker['name'] ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- جدول إنتاجية العمال -->
+            <div class="card">
+                <div class="card-header">
+                    <h5>إنتاجية العمال من <?= $start_date ?> إلى <?= $end_date ?></h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>اسم العامل</th>
+                                    <th>الهاتف</th>
+                                    <th>عدد المهام</th>
+                                    <th>المطلوب</th>
+                                    <th>المكتمل</th>
+                                    <th>المعيب</th>
+                                    <th>نسبة الإنجاز</th>
+                                    <th>متوسط الوقت (ساعة)</th>
+                                    <th>الأرباح</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($worker_productivity as $worker): 
+                                    $completion_rate = $worker['total_assigned'] > 0 ? 
+                                        ($worker['total_completed'] / $worker['total_assigned']) * 100 : 0;
+                                ?>
+                                <tr>
+                                    <td><?= $worker['worker_name'] ?></td>
+                                    <td><?= $worker['phone'] ?></td>
+                                    <td><?= $worker['total_assignments'] ?></td>
+                                    <td><?= $worker['total_assigned'] ?></td>
+                                    <td><?= $worker['total_completed'] ?></td>
+                                    <td><?= $worker['total_defective'] ?></td>
+                                    <td>
+                                        <span class="badge bg-<?= $completion_rate >= 90 ? 'success' : ($completion_rate >= 70 ? 'warning' : 'danger') ?>">
+                                            <?= number_format($completion_rate, 1) ?>%
+                                        </span>
+                                    </td>
+                                    <td><?= $worker['avg_completion_hours'] ? number_format($worker['avg_completion_hours'], 1) : '-' ?></td>
+                                    <td><?= number_format($worker['total_earnings'], 2) ?> ج.م</td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

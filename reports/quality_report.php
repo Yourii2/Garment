@@ -1,0 +1,232 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير الجودة';
+
+// فلاتر
+$start_date = $_GET['start_date'] ?? date('Y-m-01');
+$end_date = $_GET['end_date'] ?? date('Y-m-d');
+$product_id = $_GET['product_id'] ?? '';
+
+// جلب بيانات الجودة
+$quality_data = [];
+$total_produced = 0;
+$total_defective = 0;
+
+try {
+    $where_conditions = ["DATE(wa.completed_at) BETWEEN ? AND ?"];
+    $params = [$start_date, $end_date];
+    
+    if ($product_id) {
+        $where_conditions[] = "co.product_id = ?";
+        $params[] = $product_id;
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            p.name as product_name,
+            ms.name as stage_name,
+            w.name as worker_name,
+            co.cutting_number,
+            wa.quantity_completed,
+            wa.quantity_defective,
+            wa.completed_at,
+            CASE 
+                WHEN wa.quantity_completed > 0 
+                THEN (wa.quantity_defective / wa.quantity_completed) * 100 
+                ELSE 0 
+            END as defect_rate
+        FROM worker_assignments wa
+        JOIN cutting_orders co ON wa.cutting_order_id = co.id
+        JOIN products p ON co.product_id = p.id
+        JOIN manufacturing_stages ms ON wa.stage_id = ms.id
+        JOIN workers w ON wa.worker_id = w.id
+        WHERE wa.status = 'completed' AND $where_clause
+        ORDER BY wa.completed_at DESC
+    ");
+    
+    $stmt->execute($params);
+    $quality_data = $stmt->fetchAll();
+    
+    foreach ($quality_data as $item) {
+        $total_produced += $item['quantity_completed'];
+        $total_defective += $item['quantity_defective'];
+    }
+    
+    // جلب المنتجات للفلتر
+    $products_stmt = $pdo->query("SELECT id, name FROM products ORDER BY name");
+    $products = $products_stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات الجودة: ' . $e->getMessage();
+}
+
+$overall_defect_rate = $total_produced > 0 ? ($total_defective / $total_produced) * 100 : 0;
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير الجودة</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">من تاريخ</label>
+                            <input type="date" class="form-control" name="start_date" value="<?= $start_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">إلى تاريخ</label>
+                            <input type="date" class="form-control" name="end_date" value="<?= $end_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">المنتج</label>
+                            <select class="form-control" name="product_id">
+                                <option value="">جميع المنتجات</option>
+                                <?php foreach ($products as $product): ?>
+                                <option value="<?= $product['id'] ?>" <?= $product_id == $product['id'] ? 'selected' : '' ?>>
+                                    <?= $product['name'] ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- إحصائيات الجودة -->
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <h4>إجمالي المنتج</h4>
+                            <h2><?= $total_produced ?></h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-danger text-white">
+                        <div class="card-body">
+                            <h4>إجمالي المعيب</h4>
+                            <h2><?= $total_defective ?></h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <h4>معدل العيوب</h4>
+                            <h2><?= number_format($overall_defect_rate, 2) ?>%</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <h4>معدل الجودة</h4>
+                            <h2><?= number_format(100 - $overall_defect_rate, 2) ?>%</h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول تفاصيل الجودة -->
+            <div class="card">
+                <div class="card-header">
+                    <h5>تفاصيل الجودة من <?= $start_date ?> إلى <?= $end_date ?></h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>المنتج</th>
+                                    <th>المرحلة</th>
+                                    <th>العامل</th>
+                                    <th>رقم القص</th>
+                                    <th>المنتج</th>
+                                    <th>المعيب</th>
+                                    <th>معدل العيوب</th>
+                                    <th>تاريخ الإنهاء</th>
+                                    <th>تقييم الجودة</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($quality_data as $item): 
+                                    $quality_class = $item['defect_rate'] <= 2 ? 'success' : 
+                                                   ($item['defect_rate'] <= 5 ? 'warning' : 'danger');
+                                    $quality_text = $item['defect_rate'] <= 2 ? 'ممتاز' : 
+                                                  ($item['defect_rate'] <= 5 ? 'جيد' : 'ضعيف');
+                                ?>
+                                <tr>
+                                    <td><?= $item['product_name'] ?></td>
+                                    <td><?= $item['stage_name'] ?></td>
+                                    <td><?= $item['worker_name'] ?></td>
+                                    <td><?= $item['cutting_number'] ?></td>
+                                    <td><?= $item['quantity_completed'] ?></td>
+                                    <td><?= $item['quantity_defective'] ?></td>
+                                    <td><?= number_format($item['defect_rate'], 2) ?>%</td>
+                                    <td><?= date('Y-m-d', strtotime($item['completed_at'])) ?></td>
+                                    <td>
+                                        <span class="badge bg-<?= $quality_class ?>"><?= $quality_text ?></span>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

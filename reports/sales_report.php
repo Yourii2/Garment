@@ -1,0 +1,203 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير المبيعات';
+
+// فلاتر
+$start_date = $_GET['start_date'] ?? date('Y-m-01');
+$end_date = $_GET['end_date'] ?? date('Y-m-d');
+$customer_id = $_GET['customer_id'] ?? '';
+
+// جلب بيانات المبيعات
+$sales_data = [];
+$total_sales = 0;
+$total_orders = 0;
+
+try {
+    $where_conditions = ["DATE(o.created_at) BETWEEN ? AND ?"];
+    $params = [$start_date, $end_date];
+    
+    if ($customer_id) {
+        $where_conditions[] = "o.customer_id = ?";
+        $params[] = $customer_id;
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            o.id,
+            o.order_number,
+            o.customer_name,
+            o.customer_phone,
+            o.status,
+            o.created_at,
+            COALESCE(SUM(oi.quantity * oi.unit_price), 0) as order_total
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE $where_clause
+        GROUP BY o.id
+        ORDER BY o.created_at DESC
+    ");
+    
+    $stmt->execute($params);
+    $sales_data = $stmt->fetchAll();
+    
+    foreach ($sales_data as $sale) {
+        $total_sales += $sale['order_total'];
+        $total_orders++;
+    }
+    
+    // جلب العملاء للفلتر
+    $customers_stmt = $pdo->query("SELECT id, name FROM customers ORDER BY name");
+    $customers = $customers_stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات المبيعات: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير المبيعات</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">من تاريخ</label>
+                            <input type="date" class="form-control" name="start_date" value="<?= $start_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">إلى تاريخ</label>
+                            <input type="date" class="form-control" name="end_date" value="<?= $end_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">العميل</label>
+                            <select class="form-control" name="customer_id">
+                                <option value="">جميع العملاء</option>
+                                <?php foreach ($customers as $customer): ?>
+                                <option value="<?= $customer['id'] ?>" <?= $customer_id == $customer['id'] ? 'selected' : '' ?>>
+                                    <?= $customer['name'] ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- إحصائيات -->
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body">
+                            <h4>إجمالي الطلبيات</h4>
+                            <h2><?= $total_orders ?></h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <h4>إجمالي المبيعات</h4>
+                            <h2><?= number_format($total_sales, 2) ?> ج.م</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <h4>متوسط الطلبية</h4>
+                            <h2><?= $total_orders > 0 ? number_format($total_sales / $total_orders, 2) : 0 ?> ج.م</h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول المبيعات -->
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>رقم الطلبية</th>
+                                    <th>العميل</th>
+                                    <th>الهاتف</th>
+                                    <th>التاريخ</th>
+                                    <th>الحالة</th>
+                                    <th>المبلغ</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($sales_data as $sale): ?>
+                                <tr>
+                                    <td><?= $sale['order_number'] ?></td>
+                                    <td><?= $sale['customer_name'] ?></td>
+                                    <td><?= $sale['customer_phone'] ?></td>
+                                    <td><?= date('Y-m-d', strtotime($sale['created_at'])) ?></td>
+                                    <td>
+                                        <span class="badge bg-<?= $sale['status'] === 'completed' ? 'success' : 'warning' ?>">
+                                            <?= $sale['status'] ?>
+                                        </span>
+                                    </td>
+                                    <td><?= number_format($sale['order_total'], 2) ?> ج.م</td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

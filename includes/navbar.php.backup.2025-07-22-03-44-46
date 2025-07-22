@@ -1,0 +1,99 @@
+<nav class="navbar navbar-expand-lg navbar-dark fixed-top">
+    <div class="container-fluid">
+        <!-- زر تبديل القائمة الجانبية -->
+        <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="القائمة الجانبية">
+            <i class="fas fa-bars"></i>
+        </button>
+        
+        <a class="navbar-brand" href="<?= BASE_URL ?>/dashboard.php">
+            <i class="fas fa-industry me-2"></i><?= SYSTEM_NAME ?>
+        </a>
+        
+        <div class="navbar-nav ms-auto">
+            <div class="nav-item dropdown">
+                <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                    <i class="fas fa-user-circle me-1"></i>
+                    <?= htmlspecialchars($_SESSION['full_name'] ?? 'المستخدم') ?>
+                </a>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="../profile.php">
+                        <i class="fas fa-user me-2"></i>الملف الشخصي
+                    </a></li>
+                    <li><a class="dropdown-item" href="../settings.php">
+                        <i class="fas fa-cog me-2"></i>الإعدادات
+                    </a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item" href="../logout.php">
+                        <i class="fas fa-sign-out-alt me-2"></i>تسجيل الخروج
+                    </a></li>
+                </ul>
+            </div>
+            
+            <div class="nav-item">
+                <a class="nav-link" href="#" id="notificationsBtn">
+                    <i class="fas fa-bell"></i>
+                    <span class="badge bg-danger rounded-pill">3</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<!-- خلفية شفافة للشاشات الصغيرة -->
+<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+
+<script>
+// Theme Toggle Functionality - مباشرة في navbar
+document.addEventListener('DOMContentLoaded', function() {
+    const themeToggle = document.getElementById('theme-toggle');
+    const body = document.body;
+    
+    // تحقق من الوضع المحفوظ
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    
+    // تطبيق الوضع المحفوظ
+    if (savedTheme === 'dark') {
+        body.classList.add('dark-mode');
+        body.setAttribute('data-bs-theme', 'dark');
+    } else {
+        body.classList.remove('dark-mode');
+        body.setAttribute('data-bs-theme', 'light');
+    }
+    
+    // تحديث أيقونة الزر
+    updateThemeIcon(savedTheme);
+    
+    // إضافة مستمع للنقر
+    if (themeToggle) {
+        themeToggle.addEventListener('click', function() {
+            const isDark = body.classList.contains('dark-mode');
+            const newTheme = isDark ? 'light' : 'dark';
+            
+            if (newTheme === 'dark') {
+                body.classList.add('dark-mode');
+                body.setAttribute('data-bs-theme', 'dark');
+            } else {
+                body.classList.remove('dark-mode');
+                body.setAttribute('data-bs-theme', 'light');
+            }
+            
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        });
+    }
+    
+    function updateThemeIcon(theme) {
+        const icon = themeToggle?.querySelector('i');
+        if (icon) {
+            if (theme === 'dark') {
+                icon.className = 'fas fa-sun';
+            } else {
+                icon.className = 'fas fa-moon';
+            }
+        }
+    }
+});
+</script>
+
+
+

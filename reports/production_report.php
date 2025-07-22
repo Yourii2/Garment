@@ -1,0 +1,220 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير الإنتاج';
+
+// فلاتر
+$start_date = $_GET['start_date'] ?? date('Y-m-01');
+$end_date = $_GET['end_date'] ?? date('Y-m-d');
+$stage_id = $_GET['stage_id'] ?? '';
+
+// جلب بيانات الإنتاج
+$production_data = [];
+$total_completed = 0;
+$total_in_progress = 0;
+
+try {
+    $where_conditions = ["DATE(wa.created_at) BETWEEN ? AND ?"];
+    $params = [$start_date, $end_date];
+    
+    if ($stage_id) {
+        $where_conditions[] = "wa.stage_id = ?";
+        $params[] = $stage_id;
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            wa.id,
+            co.cutting_number,
+            p.name as product_name,
+            ms.name as stage_name,
+            w.name as worker_name,
+            wa.quantity_assigned,
+            wa.quantity_completed,
+            wa.quantity_defective,
+            wa.status,
+            wa.created_at,
+            wa.completed_at
+        FROM worker_assignments wa
+        JOIN cutting_orders co ON wa.cutting_order_id = co.id
+        JOIN products p ON co.product_id = p.id
+        JOIN manufacturing_stages ms ON wa.stage_id = ms.id
+        JOIN workers w ON wa.worker_id = w.id
+        WHERE $where_clause
+        ORDER BY wa.created_at DESC
+    ");
+    
+    $stmt->execute($params);
+    $production_data = $stmt->fetchAll();
+    
+    foreach ($production_data as $item) {
+        if ($item['status'] === 'completed') {
+            $total_completed += $item['quantity_completed'];
+        } else {
+            $total_in_progress += $item['quantity_assigned'];
+        }
+    }
+    
+    // جلب المراحل للفلتر
+    $stages_stmt = $pdo->query("SELECT id, name FROM manufacturing_stages ORDER BY name");
+    $stages = $stages_stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات الإنتاج: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير الإنتاج</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">من تاريخ</label>
+                            <input type="date" class="form-control" name="start_date" value="<?= $start_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">إلى تاريخ</label>
+                            <input type="date" class="form-control" name="end_date" value="<?= $end_date ?>">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">المرحلة</label>
+                            <select class="form-control" name="stage_id">
+                                <option value="">جميع المراحل</option>
+                                <?php foreach ($stages as $stage): ?>
+                                <option value="<?= $stage['id'] ?>" <?= $stage_id == $stage['id'] ? 'selected' : '' ?>>
+                                    <?= $stage['name'] ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- إحصائيات -->
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <h4>القطع المكتملة</h4>
+                            <h2><?= $total_completed ?></h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <h4>قيد التنفيذ</h4>
+                            <h2><?= $total_in_progress ?></h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <h4>إجمالي المهام</h4>
+                            <h2><?= count($production_data) ?></h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول الإنتاج -->
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>رقم القص</th>
+                                    <th>المنتج</th>
+                                    <th>المرحلة</th>
+                                    <th>العامل</th>
+                                    <th>المطلوب</th>
+                                    <th>المكتمل</th>
+                                    <th>المعيب</th>
+                                    <th>الحالة</th>
+                                    <th>تاريخ البداية</th>
+                                    <th>تاريخ الإنهاء</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($production_data as $item): ?>
+                                <tr>
+                                    <td><?= $item['cutting_number'] ?></td>
+                                    <td><?= $item['product_name'] ?></td>
+                                    <td><?= $item['stage_name'] ?></td>
+                                    <td><?= $item['worker_name'] ?></td>
+                                    <td><?= $item['quantity_assigned'] ?></td>
+                                    <td><?= $item['quantity_completed'] ?></td>
+                                    <td><?= $item['quantity_defective'] ?></td>
+                                    <td>
+                                        <span class="badge bg-<?= $item['status'] === 'completed' ? 'success' : 'warning' ?>">
+                                            <?= $item['status'] ?>
+                                        </span>
+                                    </td>
+                                    <td><?= date('Y-m-d', strtotime($item['created_at'])) ?></td>
+                                    <td><?= $item['completed_at'] ? date('Y-m-d', strtotime($item['completed_at'])) : '-' ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

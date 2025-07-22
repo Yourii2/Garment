@@ -1,0 +1,310 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'أوامر الإنتاج';
+
+// توليد CSRF token إذا لم يكن موجود
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// معالجة إضافة أمر إنتاج جديد
+if (isset($_POST['add_production_order'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $product_id = $_POST['product_id'];
+        $total_quantity = $_POST['total_quantity'];
+        $fabric_id = !empty($_POST['fabric_id']) ? $_POST['fabric_id'] : null;
+        
+        // تحديد التاريخ المستهدف تلقائ<|im_start|> (7 أيام من اليوم)
+        $target_date = date('Y-m-d', strtotime('+7 days'));
+        
+        // توليد رقم أمر الإنتاج
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM production_orders");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $order_number = 'PRD' . date('Y') . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        // إدراج أمر الإنتاج (بدون عمود notes)
+        $stmt = $pdo->prepare("
+            INSERT INTO production_orders 
+            (order_number, product_id, total_quantity, fabric_id, 
+             target_completion_date, status, created_by, start_date) 
+            VALUES (?, ?, ?, ?, ?, 'cutting', ?, CURDATE())
+        ");
+        $stmt->execute([
+            $order_number, $product_id, $total_quantity, $fabric_id, 
+            $target_date, $_SESSION['user_id']
+        ]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم إنشاء أمر الإنتاج بنجاح: {$order_number} (التاريخ المستهدف: {$target_date})";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_orders.php');
+    exit;
+}
+
+// جلب أوامر الإنتاج
+try {
+    $stmt = $pdo->query("
+        SELECT 
+            po.*,
+            p.name as product_name,
+            ft.name as fabric_name,
+            u.username as created_by_name
+        FROM production_orders po
+        LEFT JOIN products p ON po.product_id = p.id
+        LEFT JOIN fabric_types ft ON po.fabric_id = ft.id
+        LEFT JOIN users u ON po.created_by = u.id
+        ORDER BY po.created_at DESC
+    ");
+    $production_orders = $stmt->fetchAll();
+} catch (Exception $e) {
+    $production_orders = [];
+    $_SESSION['error_message'] = 'خطأ في جلب البيانات: ' . $e->getMessage();
+}
+
+// جلب المنتجات
+try {
+    $stmt = $pdo->query("SELECT id, name FROM products ORDER BY name");
+    $products = $stmt->fetchAll();
+} catch (Exception $e) {
+    $products = [];
+}
+
+// جلب أنواع الأقمشة
+try {
+    $stmt = $pdo->query("SELECT id, name FROM fabric_types ORDER BY name");
+    $fabric_types = $stmt->fetchAll();
+} catch (Exception $e) {
+    $fabric_types = [];
+}
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <div class="col-md-9 col-lg-10">
+            <main class="main-content">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2><i class="fas fa-clipboard-list me-2"></i><?= $page_title ?></h2>
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addOrderModal">
+                        <i class="fas fa-plus me-1"></i>أمر إنتاج جديد
+                    </button>
+                </div>
+
+                <!-- عرض الرسائل -->
+                <?php if (isset($_SESSION['success_message'])): ?>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <i class="fas fa-check-circle me-2"></i>
+                        <?= $_SESSION['success_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['success_message']); ?>
+                <?php endif; ?>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <i class="fas fa-exclamation-circle me-2"></i>
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <!-- جدول أوامر الإنتاج -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-list me-2"></i>أوامر الإنتاج</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>رقم الأمر</th>
+                                        <th>المنتج</th>
+                                        <th>الكمية</th>
+                                        <th>القماش</th>
+                                        <th>الحالة</th>
+                                        <th>تاريخ البدء</th>
+                                        <th>التاريخ المستهدف</th>
+                                        <th>الإجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if (empty($production_orders)): ?>
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted py-4">
+                                                <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                لا توجد أوامر إنتاج مسجلة
+                                            </td>
+                                        </tr>
+                                    <?php else: ?>
+                                        <?php foreach ($production_orders as $order): ?>
+                                            <tr>
+                                                <td><strong><?= htmlspecialchars($order['order_number']) ?></strong></td>
+                                                <td><?= htmlspecialchars($order['product_name'] ?? 'غير محدد') ?></td>
+                                                <td><span class="badge bg-primary"><?= $order['total_quantity'] ?></span></td>
+                                                <td><?= htmlspecialchars($order['fabric_name'] ?? 'غير محدد') ?></td>
+                                                <td>
+                                                    <?php
+                                                    $status_classes = [
+                                                        'cutting' => 'bg-warning',
+                                                        'manufacturing' => 'bg-info',
+                                                        'completed' => 'bg-success',
+                                                        'cancelled' => 'bg-danger'
+                                                    ];
+                                                    $status_names = [
+                                                        'cutting' => 'قص',
+                                                        'manufacturing' => 'تصنيع',
+                                                        'completed' => 'مكتمل',
+                                                        'cancelled' => 'ملغي'
+                                                    ];
+                                                    ?>
+                                                    <span class="badge <?= $status_classes[$order['status']] ?>">
+                                                        <?= $status_names[$order['status']] ?>
+                                                    </span>
+                                                </td>
+                                                <td><?= $order['start_date'] ? date('Y-m-d', strtotime($order['start_date'])) : '-' ?></td>
+                                                <td><?= $order['target_completion_date'] ? date('Y-m-d', strtotime($order['target_completion_date'])) : '-' ?></td>
+                                                <td>
+                                                    <div class="btn-group" role="group">
+                                                        <button class="btn btn-sm btn-outline-primary" 
+                                                                onclick="viewOrder(<?= $order['id'] ?>)">
+                                                            <i class="fas fa-eye"></i>
+                                                        </button>
+                                                        <button class="btn btn-sm btn-outline-warning" 
+                                                                onclick="editOrder(<?= $order['id'] ?>)">
+                                                            <i class="fas fa-edit"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+</div>
+
+<!-- Modal إضافة أمر إنتاج -->
+<div class="modal fade" id="addOrderModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة أمر إنتاج جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" action="">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">المنتج *</label>
+                                <select name="product_id" class="form-select" required>
+                                    <option value="">اختر المنتج</option>
+                                    <?php foreach ($products as $product): ?>
+                                        <option value="<?= $product['id'] ?>">
+                                            <?= htmlspecialchars($product['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الكمية المطلوبة *</label>
+                                <input type="number" name="total_quantity" class="form-control" min="1" required>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-12">
+                            <div class="mb-3">
+                                <label class="form-label">نوع القماش</label>
+                                <select name="fabric_id" class="form-select">
+                                    <option value="">اختر نوع القماش</option>
+                                    <?php foreach ($fabric_types as $fabric): ?>
+                                        <option value="<?= $fabric['id'] ?>">
+                                            <?= htmlspecialchars($fabric['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        سيتم تحديد التاريخ المستهدف للإنجاز تلقائ<|im_end|> (7 أيام من اليوم)
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_production_order" class="btn btn-primary">
+                        <i class="fas fa-save me-1"></i>حفظ
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function viewOrder(orderId) {
+    window.location.href = `production_order_details.php?id=${orderId}`;
+}
+
+function editOrder(orderId) {
+    alert('سيتم إضافة وظيفة التعديل قريباً');
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

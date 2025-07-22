@@ -1,0 +1,838 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة فاتورة جديدة
+if (isset($_POST['add_invoice'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $invoice_type = $_POST['invoice_type'];
+        $supplier_id = !empty($_POST['supplier_id']) ? $_POST['supplier_id'] : null;
+        $branch_id = $_POST['branch_id'];
+        $invoice_date = $_POST['invoice_date'];
+        $notes = $_POST['notes'] ?? '';
+        $user_id = $_SESSION['user_id'];
+        
+        // توليد رقم الفاتورة
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM inventory_invoices");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $invoice_number = 'INV-' . date('Y') . '-' . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        // إدراج الفاتورة
+        $stmt = $pdo->prepare("
+            INSERT INTO inventory_invoices (invoice_number, invoice_type, supplier_id, branch_id, invoice_date, notes, user_id, total_amount, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW())
+        ");
+        $stmt->execute([$invoice_number, $invoice_type, $supplier_id, $branch_id, $invoice_date, $notes, $user_id]);
+        $invoice_id = $pdo->lastInsertId();
+        
+        $total_amount = 0;
+        
+        // معالجة أصناف الأقمشة
+        if (isset($_POST['fabric_items']) && is_array($_POST['fabric_items'])) {
+            foreach ($_POST['fabric_items'] as $item) {
+                if (empty($item['fabric_id']) || empty($item['quantity']) || $item['quantity'] <= 0) continue;
+                
+                $fabric_id = $item['fabric_id'];
+                $quantity = floatval($item['quantity']);
+                $unit_cost = floatval($item['unit_cost'] ?? 0);
+                $total_cost = $quantity * $unit_cost;
+                $total_amount += $total_cost;
+                
+                // إدراج الصنف
+                $stmt = $pdo->prepare("
+                    INSERT INTO inventory_invoice_items (invoice_id, fabric_id, quantity, unit_cost, total_cost) 
+                    VALUES (?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$invoice_id, $fabric_id, $quantity, $unit_cost, $total_cost]);
+                
+                // تحديث المخزون حسب نوع الفاتورة
+                if ($invoice_type === 'purchase') {
+                    $stmt = $pdo->prepare("UPDATE fabric_types SET current_quantity = current_quantity + ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $fabric_id]);
+                    
+                } elseif ($invoice_type === 'return') {
+                    $stmt = $pdo->prepare("UPDATE fabric_types SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $fabric_id]);
+                    
+                } elseif ($invoice_type === 'damage') {
+                    $stmt = $pdo->prepare("UPDATE fabric_types SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $fabric_id]);
+                }
+                
+                if (!$result) {
+                    throw new Exception("فشل في تحديث كمية القماش ID: $fabric_id");
+                }
+            }
+        }
+        
+        // معالجة أصناف الإكسسوارات
+        if (isset($_POST['accessory_items']) && is_array($_POST['accessory_items'])) {
+            foreach ($_POST['accessory_items'] as $item) {
+                if (empty($item['accessory_id']) || empty($item['quantity']) || $item['quantity'] <= 0) continue;
+                
+                $accessory_id = $item['accessory_id'];
+                $quantity = floatval($item['quantity']);
+                $unit_cost = floatval($item['unit_cost'] ?? 0);
+                $total_cost = $quantity * $unit_cost;
+                $total_amount += $total_cost;
+                
+                // إدراج الصنف
+                $stmt = $pdo->prepare("
+                    INSERT INTO inventory_invoice_items (invoice_id, accessory_id, quantity, unit_cost, total_cost) 
+                    VALUES (?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$invoice_id, $accessory_id, $quantity, $unit_cost, $total_cost]);
+                
+                // تحديث المخزون حسب نوع الفاتورة
+                if ($invoice_type === 'purchase') {
+                    $stmt = $pdo->prepare("UPDATE accessories SET current_quantity = current_quantity + ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $accessory_id]);
+                    
+                } elseif ($invoice_type === 'return') {
+                    $stmt = $pdo->prepare("UPDATE accessories SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $accessory_id]);
+                    
+                } elseif ($invoice_type === 'damage') {
+                    $stmt = $pdo->prepare("UPDATE accessories SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $result = $stmt->execute([$quantity, $accessory_id]);
+                }
+                
+                if (!$result) {
+                    throw new Exception("فشل في تحديث كمية الإكسسوار ID: $accessory_id");
+                }
+            }
+        }
+        
+        // تحديث إجمالي الفاتورة
+        $stmt = $pdo->prepare("UPDATE inventory_invoices SET total_amount = ? WHERE id = ?");
+        $stmt->execute([$total_amount, $invoice_id]);
+        
+        // تحديث رصيد المورد حسب نوع الفاتورة
+        if ($supplier_id && $total_amount > 0) {
+            if ($invoice_type === 'purchase') {
+                $stmt = $pdo->prepare("UPDATE suppliers SET current_balance = current_balance + ? WHERE id = ?");
+                $stmt->execute([$total_amount, $supplier_id]);
+            } elseif ($invoice_type === 'return') {
+                $stmt = $pdo->prepare("UPDATE suppliers SET current_balance = current_balance - ? WHERE id = ?");
+                $stmt->execute([$total_amount, $supplier_id]);
+            }
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم إضافة الفاتورة بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: invoices.php');
+    exit;
+}
+
+// معالجة حذف فاتورة
+if (isset($_POST['delete_invoice'])) {
+    if (!checkPermission('inventory_delete') && $_SESSION['role'] !== 'admin') {
+        $_SESSION['error_message'] = 'ليس لديك صلاحية لحذف الفواتير';
+        header('Location: invoices.php');
+        exit;
+    }
+    
+    $password = $_POST['admin_password'] ?? '';
+    $invoice_id = $_POST['invoice_id'];
+    
+    // التحقق من كلمة المرور للمدير
+    if ($_SESSION['role'] === 'admin') {
+        $stmt = $pdo->prepare("SELECT password FROM users WHERE id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $user = $stmt->fetch();
+        
+        if (!password_verify($password, $user['password'])) {
+            $_SESSION['error_message'] = 'كلمة المرور غير صحيحة';
+            header('Location: invoices.php');
+            exit;
+        }
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // جلب بيانات الفاتورة
+        $stmt = $pdo->prepare("SELECT * FROM inventory_invoices WHERE id = ?");
+        $stmt->execute([$invoice_id]);
+        $invoice = $stmt->fetch();
+        
+        if (!$invoice) {
+            throw new Exception('الفاتورة غير موجودة');
+        }
+        
+        // جلب أصناف الفاتورة
+        $stmt = $pdo->prepare("SELECT * FROM inventory_invoice_items WHERE invoice_id = ?");
+        $stmt->execute([$invoice_id]);
+        $items = $stmt->fetchAll();
+        
+        // عكس تأثير الفاتورة على المخزون
+        foreach ($items as $item) {
+            if ($item['fabric_id']) {
+                if ($invoice['invoice_type'] === 'purchase') {
+                    $stmt = $pdo->prepare("UPDATE fabric_types SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $stmt->execute([$item['quantity'], $item['fabric_id']]);
+                } elseif ($invoice['invoice_type'] === 'return' || $invoice['invoice_type'] === 'damage') {
+                    $stmt = $pdo->prepare("UPDATE fabric_types SET current_quantity = current_quantity + ? WHERE id = ?");
+                    $stmt->execute([$item['quantity'], $item['fabric_id']]);
+                }
+            }
+            
+            if ($item['accessory_id']) {
+                if ($invoice['invoice_type'] === 'purchase') {
+                    $stmt = $pdo->prepare("UPDATE accessories SET current_quantity = current_quantity - ? WHERE id = ?");
+                    $stmt->execute([$item['quantity'], $item['accessory_id']]);
+                } elseif ($invoice['invoice_type'] === 'return' || $invoice['invoice_type'] === 'damage') {
+                    $stmt = $pdo->prepare("UPDATE accessories SET current_quantity = current_quantity + ? WHERE id = ?");
+                    $stmt->execute([$item['quantity'], $item['accessory_id']]);
+                }
+            }
+        }
+        
+        // عكس تأثير الفاتورة على رصيد المورد
+        if ($invoice['supplier_id'] && $invoice['total_amount'] > 0) {
+            if ($invoice['invoice_type'] === 'purchase') {
+                $stmt = $pdo->prepare("UPDATE suppliers SET current_balance = current_balance - ? WHERE id = ?");
+                $stmt->execute([$invoice['total_amount'], $invoice['supplier_id']]);
+            } elseif ($invoice['invoice_type'] === 'return') {
+                $stmt = $pdo->prepare("UPDATE suppliers SET current_balance = current_balance + ? WHERE id = ?");
+                $stmt->execute([$invoice['total_amount'], $invoice['supplier_id']]);
+            }
+        }
+        
+        // حذف أصناف الفاتورة
+        $stmt = $pdo->prepare("DELETE FROM inventory_invoice_items WHERE invoice_id = ?");
+        $stmt->execute([$invoice_id]);
+        
+        // حذف الفاتورة
+        $stmt = $pdo->prepare("DELETE FROM inventory_invoices WHERE id = ?");
+        $stmt->execute([$invoice_id]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم حذف الفاتورة بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: invoices.php');
+    exit;
+}
+
+// جلب الفواتير
+$stmt = $pdo->query("
+    SELECT i.*, s.name as supplier_name, b.name as branch_name 
+    FROM inventory_invoices i 
+    LEFT JOIN suppliers s ON i.supplier_id = s.id 
+    LEFT JOIN branches b ON i.branch_id = b.id 
+    ORDER BY i.id DESC
+");
+$invoices = $stmt->fetchAll();
+
+// جلب الموردين
+$stmt = $pdo->query("SELECT id, name FROM suppliers ORDER BY name");
+$suppliers = $stmt->fetchAll();
+
+// جلب المخازن
+$stmt = $pdo->query("SELECT id, name FROM branches ORDER BY name");
+$branches = $stmt->fetchAll();
+
+// جلب الأقمشة
+$stmt = $pdo->query("SELECT id, name, code FROM fabric_types ORDER BY name");
+$fabrics = $stmt->fetchAll();
+
+// جلب الإكسسوارات
+$stmt = $pdo->query("SELECT id, name, code FROM accessories ORDER BY name");
+$accessories = $stmt->fetchAll();
+
+// توليد رقم الفاتورة التالي للعرض
+$stmt = $pdo->query("SELECT MAX(id) as max_id FROM inventory_invoices");
+$result = $stmt->fetch();
+$nextId = ($result['max_id'] ?? 0) + 1;
+$next_invoice_number = 'INV-' . date('Y') . '-' . str_pad($nextId, 4, '0', STR_PAD_LEFT);
+?>
+
+<?php
+$page_title = 'فواتير المخزون';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="../../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include '../includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-file-invoice me-2"></i>فواتير المخزون
+                    </h1>
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addInvoiceModal">
+                        <i class="fas fa-plus me-1"></i>إضافة فاتورة جديدة
+                    </button>
+                </div>
+
+<?php if (isset($_SESSION['success_message'])): ?>
+    <div class="alert alert-success alert-dismissible fade show">
+        <?= $_SESSION['success_message'] ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    <?php unset($_SESSION['success_message']); ?>
+<?php endif; ?>
+
+<?php if (isset($_SESSION['error_message'])): ?>
+    <div class="alert alert-danger alert-dismissible fade show">
+        <?= $_SESSION['error_message'] ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    <?php unset($_SESSION['error_message']); ?>
+<?php endif; ?>
+
+<!-- إحصائيات سريعة -->
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-primary shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
+                            إجمالي الفواتير
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            <?php
+                            $stmt = $pdo->query("SELECT COUNT(*) as count FROM inventory_invoices");
+                            echo $stmt->fetch()['count'];
+                            ?>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-file-invoice fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-success shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
+                            فواتير الشراء
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            <?php
+                            $stmt = $pdo->query("SELECT COUNT(*) as count FROM inventory_invoices WHERE invoice_type = 'purchase'");
+                            echo $stmt->fetch()['count'];
+                            ?>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-shopping-cart fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-warning shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
+                            فواتير الإرتجاع
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            <?php
+                            $stmt = $pdo->query("SELECT COUNT(*) as count FROM inventory_invoices WHERE invoice_type = 'return'");
+                            echo $stmt->fetch()['count'];
+                            ?>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-undo fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-danger shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">
+                            إجمالي المبلغ
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            <?php
+                            $stmt = $pdo->query("SELECT SUM(total_amount) as total FROM inventory_invoices");
+                            $total = $stmt->fetch()['total'] ?? 0;
+                            echo number_format($total, 2) . ' ج.م';
+                            ?>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-dollar-sign fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- جدول الفواتير -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title mb-0">
+            <i class="fas fa-list me-2"></i>قائمة الفواتير
+        </h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>رقم الفاتورة</th>
+                        <th>النوع</th>
+                        <th>المورد</th>
+                        <th>التاريخ</th>
+                        <th>المبلغ الإجمالي</th>
+                        <th>المستخدم</th>
+                        <th>الإجراءات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    $stmt = $pdo->query("
+                        SELECT i.*, s.name as supplier_name, u.username 
+                        FROM inventory_invoices i 
+                        LEFT JOIN suppliers s ON i.supplier_id = s.id 
+                        LEFT JOIN users u ON i.user_id = u.id 
+                        ORDER BY i.created_at DESC
+                    ");
+                    $invoices = $stmt->fetchAll();
+                    
+                    if (empty($invoices)): ?>
+                        <tr>
+                            <td colspan="7" class="text-center text-muted py-4">
+                                <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                لا توجد فواتير مسجلة
+                                <br>
+                                <button type="button" class="btn btn-primary mt-2" data-bs-toggle="modal" data-bs-target="#addInvoiceModal">
+                                    <i class="fas fa-plus me-2"></i>إضافة أول فاتورة
+                                </button>
+                            </td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($invoices as $invoice): ?>
+                            <tr>
+                                <td>
+                                    <strong><?= htmlspecialchars($invoice['invoice_number']) ?></strong>
+                                </td>
+                                <td>
+                                    <?php
+                                    $type_badges = [
+                                        'purchase' => '<span class="badge bg-primary">شراء</span>',
+                                        'return' => '<span class="badge bg-warning">إرتجاع</span>',
+                                        'damage' => '<span class="badge bg-danger">هالك</span>'
+                                    ];
+                                    echo $type_badges[$invoice['invoice_type']] ?? $invoice['invoice_type'];
+                                    ?>
+                                </td>
+                                <td><?= htmlspecialchars($invoice['supplier_name'] ?? 'غير محدد') ?></td>
+                                <td><?= date('Y-m-d', strtotime($invoice['invoice_date'])) ?></td>
+                                <td>
+                                    <strong><?= number_format($invoice['total_amount'], 2) ?> <?= CURRENCY_SYMBOL ?></strong>
+                                </td>
+                                <td><?= htmlspecialchars($invoice['username'] ?? '') ?></td>
+                                <td>
+                                    <div class="btn-group" role="group">
+                                        <a href="invoice_details.php?id=<?= $invoice['id'] ?>" class="btn btn-sm btn-info" title="عرض التفاصيل">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                        <?php if (checkPermission('inventory_delete') || $_SESSION['role'] === 'admin'): ?>
+                                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteInvoice(<?= $invoice['id'] ?>, '<?= addslashes($invoice['invoice_number']) ?>')" title="حذف">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Modal إضافة فاتورة -->
+<div class="modal fade" id="addInvoiceModal" tabindex="-1" aria-labelledby="addInvoiceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addInvoiceModalLabel">
+                    <i class="fas fa-plus me-2"></i>إضافة فاتورة جديدة
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="POST" action="">
+                <div class="modal-body">
+                    <!-- معلومات الفاتورة الأساسية -->
+                    <div class="row mb-4">
+                        <div class="col-md-3">
+                            <div class="mb-3">
+                                <label class="form-label">رقم الفاتورة</label>
+                                <input type="text" class="form-control" value="<?= $next_invoice_number ?>" readonly>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="mb-3">
+                                <label class="form-label">نوع الفاتورة *</label>
+                                <select name="invoice_type" class="form-select" required onchange="toggleSupplierField()">
+                                    <option value="">اختر النوع</option>
+                                    <option value="purchase">شراء</option>
+                                    <option value="return">إرتجاع</option>
+                                    <option value="damage">هالك</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-3" id="supplier_field">
+                            <div class="mb-3">
+                                <label class="form-label">المورد *</label>
+                                <select name="supplier_id" class="form-select" required>
+                                    <option value="">اختر المورد</option>
+                                    <?php foreach ($suppliers as $supplier): ?>
+                                        <option value="<?= $supplier['id'] ?>"><?= htmlspecialchars($supplier['name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="mb-3">
+                                <label class="form-label">المخزن *</label>
+                                <select name="branch_id" class="form-select" required>
+                                    <option value="">اختر المخزن</option>
+                                    <?php foreach ($branches as $branch): ?>
+                                        <option value="<?= $branch['id'] ?>"><?= htmlspecialchars($branch['name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">تاريخ الفاتورة *</label>
+                                <input type="date" name="invoice_date" class="form-control" value="<?= date('Y-m-d') ?>" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">ملاحظات</label>
+                                <textarea name="notes" class="form-control" rows="2" placeholder="ملاحظات إضافية..."></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- أصناف الأقمشة -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0"><i class="fas fa-cut me-2"></i>أصناف الأقمشة</h6>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="addFabricItem()">
+                                <i class="fas fa-plus me-1"></i>إضافة صنف
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div id="fabric-items">
+                                <div class="row fabric-item mb-3">
+                                    <div class="col-md-4">
+                                        <select name="fabric_items[0][fabric_id]" class="form-select">
+                                            <option value="">اختر القماش</option>
+                                            <?php foreach ($fabrics as $fabric): ?>
+                                                <option value="<?= $fabric['id'] ?>"><?= htmlspecialchars($fabric['name']) ?> (<?= htmlspecialchars($fabric['code']) ?>)</option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" name="fabric_items[0][quantity]" class="form-control quantity" placeholder="الكمية" step="0.01" onchange="calculateTotal(this)">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" name="fabric_items[0][unit_cost]" class="form-control unit-cost" placeholder="سعر الوحدة" step="0.01" onchange="calculateTotal(this)">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" class="form-control total-cost" placeholder="الإجمالي" readonly>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <button type="button" class="btn btn-danger btn-sm" onclick="removeItem(this)" style="display: none;">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- أصناف الإكسسوارات -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0"><i class="fas fa-puzzle-piece me-2"></i>أصناف الإكسسوارات</h6>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="addAccessoryItem()">
+                                <i class="fas fa-plus me-1"></i>إضافة صنف
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div id="accessory-items">
+                                <div class="row accessory-item mb-3">
+                                    <div class="col-md-4">
+                                        <select name="accessory_items[0][accessory_id]" class="form-select">
+                                            <option value="">اختر الإكسسوار</option>
+                                            <?php foreach ($accessories as $accessory): ?>
+                                                <option value="<?= $accessory['id'] ?>"><?= htmlspecialchars($accessory['name']) ?> (<?= htmlspecialchars($accessory['code']) ?>)</option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" name="accessory_items[0][quantity]" class="form-control quantity" placeholder="الكمية" step="0.01" onchange="calculateTotal(this)">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" name="accessory_items[0][unit_cost]" class="form-control unit-cost" placeholder="سعر الوحدة" step="0.01" onchange="calculateTotal(this)">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" class="form-control total-cost" placeholder="الإجمالي" readonly>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <button type="button" class="btn btn-danger btn-sm" onclick="removeItem(this)" style="display: none;">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- الإجمالي العام -->
+                    <div class="row">
+                        <div class="col-md-12">
+                            <div class="card bg-light">
+                                <div class="card-body text-center">
+                                    <h5 class="mb-0">
+                                        الإجمالي العام: <span id="grand-total" class="text-primary">0.00</span> <?= CURRENCY_SYMBOL ?>
+                                    </h5>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_invoice" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>حفظ الفاتورة
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- مودال حذف الفاتورة -->
+<div class="modal fade" id="deleteInvoiceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تأكيد حذف الفاتورة</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>تحذير:</strong> حذف الفاتورة سيؤثر على أرصدة المخزون والموردين
+                    </div>
+                    <p>هل أنت متأكد من حذف الفاتورة: <span id="invoiceNumberToDelete"></span>؟</p>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">كلمة المرور للتأكيد:</label>
+                        <input type="password" name="admin_password" class="form-control" required>
+                    </div>
+                    
+                    <input type="hidden" name="invoice_id" id="invoiceIdToDelete">
+                    <input type="hidden" name="delete_invoice" value="1">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" class="btn btn-danger">حذف الفاتورة</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // تأكد من تحميل Bootstrap بشكل صحيح
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('Bootstrap loaded:', typeof bootstrap !== 'undefined');
+        
+        // تهيئة المودال يدويا إذا لزم الأمر
+        const addInvoiceModal = document.getElementById('addInvoiceModal');
+        if (addInvoiceModal) {
+            const modal = new bootstrap.Modal(addInvoiceModal);
+            
+            // ربط الزر بالمودال
+            const addButton = document.querySelector('[data-bs-target="#addInvoiceModal"]');
+            if (addButton) {
+                addButton.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    modal.show();
+                });
+            }
+        }
+        
+        toggleSupplierField();
+    });
+
+    let fabricItemIndex = 1;
+    let accessoryItemIndex = 1;
+
+    function toggleSupplierField() {
+        const invoiceType = document.querySelector('select[name="invoice_type"]');
+        const supplierField = document.getElementById('supplier_field');
+        
+        if (invoiceType && supplierField) {
+            if (invoiceType.value === 'damage') {
+                supplierField.style.display = 'none';
+                supplierField.querySelector('select').removeAttribute('required');
+            } else {
+                supplierField.style.display = 'block';
+                if (invoiceType.value === 'purchase' || invoiceType.value === 'return') {
+                    supplierField.querySelector('select').setAttribute('required', 'required');
+                }
+            }
+        }
+    }
+
+    function addFabricItem() {
+        const container = document.getElementById('fabric-items');
+        const newItem = container.querySelector('.fabric-item').cloneNode(true);
+        
+        // تحديث الأسماء والقيم
+        newItem.querySelectorAll('select, input').forEach(el => {
+            if (el.name) {
+                el.name = el.name.replace('[0]', '[' + fabricItemIndex + ']');
+            }
+            if (el.type !== 'button') el.value = '';
+        });
+        
+        // إظهار زر الحذف
+        const deleteBtn = newItem.querySelector('button');
+        if (deleteBtn) {
+            deleteBtn.style.display = 'block';
+        }
+        
+        container.appendChild(newItem);
+        fabricItemIndex++;
+    }
+
+    function addAccessoryItem() {
+        const container = document.getElementById('accessory-items');
+        const newItem = container.querySelector('.accessory-item').cloneNode(true);
+        
+        // تحديث الأسماء والقيم
+        newItem.querySelectorAll('select, input').forEach(el => {
+            if (el.name) {
+                el.name = el.name.replace('[0]', '[' + accessoryItemIndex + ']');
+            }
+            if (el.type !== 'button') el.value = '';
+        });
+        
+        // إظهار زر الحذف
+        const deleteBtn = newItem.querySelector('button');
+        if (deleteBtn) {
+            deleteBtn.style.display = 'block';
+        }
+        
+        container.appendChild(newItem);
+        accessoryItemIndex++;
+    }
+
+    function removeItem(button) {
+        button.closest('.fabric-item, .accessory-item').remove();
+        updateGrandTotal();
+    }
+
+    function calculateTotal(element) {
+        const row = element.closest('.row');
+        const quantity = parseFloat(row.querySelector('.quantity').value) || 0;
+        const unitCost = parseFloat(row.querySelector('.unit-cost').value) || 0;
+        const total = quantity * unitCost;
+        
+        row.querySelector('.total-cost').value = total.toFixed(2);
+        updateGrandTotal();
+    }
+
+    function updateGrandTotal() {
+        let grandTotal = 0;
+        document.querySelectorAll('.total-cost').forEach(input => {
+            grandTotal += parseFloat(input.value) || 0;
+        });
+        
+        const grandTotalElement = document.getElementById('grand-total');
+        if (grandTotalElement) {
+            grandTotalElement.textContent = grandTotal.toFixed(2);
+        }
+    }
+
+    function viewInvoice(id) {
+        // وظيفة عرض الفاتورة
+        console.log('View invoice:', id);
+    }
+
+    function editInvoice(id) {
+        // وظيفة تعديل الفاتورة
+        console.log('Edit invoice:', id);
+    }
+
+    function deleteInvoice(id, number) {
+        if (confirm('هل أنت متأكد من حذف الفاتورة ' + number + '؟')) {
+            // وظيفة حذف الفاتورة
+            console.log('Delete invoice:', id);
+        }
+    }
+
+    function confirmDeleteInvoice(id, number) {
+        document.getElementById('invoiceIdToDelete').value = id;
+        document.getElementById('invoiceNumberToDelete').textContent = number;
+        new bootstrap.Modal(document.getElementById('deleteInvoiceModal')).show();
+    }
+</script>
+</body>
+</html>
+

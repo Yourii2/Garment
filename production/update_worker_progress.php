@@ -1,0 +1,281 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$assignment_id = $_GET['assignment_id'] ?? 0;
+
+// معالجة تحديث التقدم
+if (isset($_POST['update_progress'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $quantity_completed = $_POST['quantity_completed'];
+        $status = $_POST['status'];
+        $notes = $_POST['notes'] ?? '';
+        
+        // جلب بيانات التخصيص الحالية
+        $stmt = $pdo->prepare("SELECT * FROM stage_worker_assignments WHERE id = ?");
+        $stmt->execute([$assignment_id]);
+        $assignment = $stmt->fetch();
+        
+        if (!$assignment) {
+            throw new Exception('التخصيص غير موجود');
+        }
+        
+        // التحقق من الكمية
+        if ($quantity_completed > $assignment['quantity_assigned']) {
+            throw new Exception('الكمية المكتملة لا يمكن أن تكون أكبر من المخصصة');
+        }
+        
+        // تحديد أوقات البداية والنهاية
+        $start_time = $assignment['start_time'];
+        $end_time = $assignment['end_time'];
+        
+        if ($status == 'in_progress' && !$start_time) {
+            $start_time = date('Y-m-d H:i:s');
+        }
+        
+        if ($status == 'completed' && !$end_time) {
+            $end_time = date('Y-m-d H:i:s');
+        }
+        
+        // تحديث التخصيص
+        $stmt = $pdo->prepare("
+            UPDATE stage_worker_assignments 
+            SET quantity_completed = ?, 
+                status = ?, 
+                notes = ?,
+                start_time = ?,
+                end_time = ?,
+                updated_at = NOW()
+            WHERE id = ?
+        ");
+        $stmt->execute([$quantity_completed, $status, $notes, $start_time, $end_time, $assignment_id]);
+        
+        // تحديث حالة المرحلة
+        $stmt = $pdo->prepare("
+            UPDATE production_stages ps
+            SET 
+                quantity_completed = (
+                    SELECT SUM(quantity_completed) 
+                    FROM stage_worker_assignments 
+                    WHERE production_stage_id = ps.id
+                ),
+                status = CASE 
+                    WHEN (SELECT SUM(quantity_completed) FROM stage_worker_assignments WHERE production_stage_id = ps.id) >= ps.quantity_required 
+                    THEN 'completed'
+                    WHEN (SELECT COUNT(*) FROM stage_worker_assignments WHERE production_stage_id = ps.id AND status = 'in_progress') > 0 
+                    THEN 'in_progress'
+                    ELSE ps.status
+                END
+            WHERE id = ?
+        ");
+        $stmt->execute([$assignment['production_stage_id']]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم تحديث التقدم بنجاح';
+        
+        // العودة لصفحة تخصيص العمال
+        $stmt = $pdo->prepare("
+            SELECT ps.cutting_order_id 
+            FROM production_stages ps 
+            WHERE ps.id = ?
+        ");
+        $stmt->execute([$assignment['production_stage_id']]);
+        $cutting_order = $stmt->fetch();
+        
+        header("Location: worker_assignment.php?cutting_order_id={$cutting_order['cutting_order_id']}");
+        exit;
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+}
+
+// جلب بيانات التخصيص
+try {
+    $stmt = $pdo->prepare("
+        SELECT 
+            swa.*,
+            w.name as worker_name,
+            ps.stage_order,
+            ms.name as stage_name,
+            ps.quantity_required,
+            co.cutting_number
+        FROM stage_worker_assignments swa
+        JOIN workers w ON swa.worker_id = w.id
+        JOIN production_stages ps ON swa.production_stage_id = ps.id
+        JOIN manufacturing_stages ms ON ps.stage_id = ms.id
+        JOIN cutting_orders co ON ps.cutting_order_id = co.id
+        WHERE swa.id = ?
+    ");
+    $stmt->execute([$assignment_id]);
+    $assignment = $stmt->fetch();
+    
+    if (!$assignment) {
+        $_SESSION['error_message'] = 'التخصيص غير موجود';
+        header('Location: cutting.php');
+        exit;
+    }
+} catch (Exception $e) {
+    $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    header('Location: cutting.php');
+    exit;
+}
+
+$page_title = 'تحديث تقدم العامل';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../../assets/css/style.css" rel="stylesheet">
+    <style>
+        .main-content { margin-top: 60px; }
+    </style>
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include '../includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-edit me-2"></i><?= $page_title ?>
+                    </h1>
+                </div>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <div class="row">
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">تحديث التقدم</h5>
+                            </div>
+                            <div class="card-body">
+                                <form method="POST">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">الكمية المكتملة</label>
+                                                <input type="number" name="quantity_completed" class="form-control" 
+                                                       value="<?= $assignment['quantity_completed'] ?>"
+                                                       max="<?= $assignment['quantity_assigned'] ?>" 
+                                                       min="0" required>
+                                                <div class="form-text">
+                                                    من أصل <?= number_format($assignment['quantity_assigned']) ?> قطعة مخصصة
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">الحالة</label>
+                                                <select name="status" class="form-select" required>
+                                                    <option value="assigned" <?= $assignment['status'] == 'assigned' ? 'selected' : '' ?>>مخصص</option>
+                                                    <option value="in_progress" <?= $assignment['status'] == 'in_progress' ? 'selected' : '' ?>>قيد العمل</option>
+                                                    <option value="completed" <?= $assignment['status'] == 'completed' ? 'selected' : '' ?>>مكتمل</option>
+                                                    <option value="paused" <?= $assignment['status'] == 'paused' ? 'selected' : '' ?>>متوقف</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">ملاحظات</label>
+                                        <textarea name="notes" class="form-control" rows="4"><?= htmlspecialchars($assignment['notes']) ?></textarea>
+                                    </div>
+                                    
+                                    <div class="d-flex gap-2">
+                                        <button type="submit" name="update_progress" class="btn btn-primary">
+                                            <i class="fas fa-save me-1"></i>حفظ التحديث
+                                        </button>
+                                        <a href="worker_assignment.php?cutting_order_id=<?= $assignment['cutting_order_id'] ?>" class="btn btn-secondary">
+                                            <i class="fas fa-arrow-right me-1"></i>إلغاء
+                                        </a>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="card-title mb-0">معلومات التخصيص</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <strong>أمر القص:</strong><br>
+                                    <?= htmlspecialchars($assignment['cutting_number']) ?>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <strong>العامل:</strong><br>
+                                    <?= htmlspecialchars($assignment['worker_name']) ?>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <strong>المرحلة:</strong><br>
+                                    <?= htmlspecialchars($assignment['stage_name']) ?>
+                                    <span class="badge bg-secondary ms-1"><?= $assignment['stage_order'] ?></span>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <strong>الكمية المخصصة:</strong><br>
+                                    <span class="badge bg-primary"><?= number_format($assignment['quantity_assigned']) ?> قطعة</span>
+                                </div>
+                                
+                                <?php if ($assignment['start_time']): ?>
+                                    <div class="mb-3">
+                                        <strong>وقت البداية:</strong><br>
+                                        <small><?= date('Y-m-d H:i', strtotime($assignment['start_time'])) ?></small>
+                                    </div>
+                                <?php endif; ?>
+                                
+                                <?php if ($assignment['end_time']): ?>
+                                    <div class="mb-3">
+                                        <strong>وقت الانتهاء:</strong><br>
+                                        <small><?= date('Y-m-d H:i', strtotime($assignment['end_time'])) ?></small>
+                                    </div>
+                                <?php endif; ?>
+                                
+                                <?php if ($assignment['start_time'] && $assignment['end_time']): ?>
+                                    <?php
+                                    $start = new DateTime($assignment['start_time']);
+                                    $end = new DateTime($assignment['end_time']);
+                                    $duration = $start->diff($end);
+                                    ?>
+                                    <div class="mb-3">
+                                        <strong>المدة المستغرقة:</strong><br>
+                                        <span class="text-success">
+                                            <?= $duration->h ?> ساعة <?= $duration->i ?> دقيقة
+                                        </span>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

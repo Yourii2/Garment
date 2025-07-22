@@ -1,0 +1,244 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+if (!checkPermission('inventory_view')) {
+    header('Location: ../dashboard.php');
+    exit;
+}
+
+$fabric_id = intval($_GET['id'] ?? 0);
+
+if (!$fabric_id) {
+    header('Location: fabrics.php');
+    exit;
+}
+
+// جلب بيانات القماش
+$stmt = $pdo->prepare("
+    SELECT ft.*, b.name as branch_name 
+    FROM fabric_types ft 
+    LEFT JOIN branches b ON ft.branch_id = b.id 
+    WHERE ft.id = ?
+");
+$stmt->execute([$fabric_id]);
+$fabric = $stmt->fetch();
+
+if (!$fabric) {
+    header('Location: fabrics.php');
+    exit;
+}
+
+// جلب حركات المخزون
+$stmt = $pdo->prepare("
+    SELECT im.*, u.full_name as user_name 
+    FROM inventory_movements im 
+    LEFT JOIN users u ON im.user_id = u.id 
+    WHERE im.fabric_id = ? 
+    ORDER BY im.created_at DESC
+");
+$stmt->execute([$fabric_id]);
+$movements = $stmt->fetchAll();
+
+// حساب الإحصائيات
+$total_in = 0;
+$total_out = 0;
+$total_cost = 0;
+
+foreach ($movements as $movement) {
+    if ($movement['movement_type'] === 'in') {
+        $total_in += $movement['quantity'];
+        $total_cost += $movement['total_cost'];
+    } elseif ($movement['movement_type'] === 'out') {
+        $total_out += $movement['quantity'];
+    }
+}
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تاريخ حركات القماش - <?= htmlspecialchars($fabric['name']) ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="../../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid mt-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2>
+                        <i class="fas fa-history me-2"></i>
+                        تاريخ حركات القماش
+                    </h2>
+                    <div>
+                        <button onclick="window.print()" class="btn btn-outline-primary me-2">
+                            <i class="fas fa-print me-1"></i>
+                            طباعة
+                        </button>
+                        <button onclick="window.close()" class="btn btn-secondary">
+                            <i class="fas fa-times me-1"></i>
+                            إغلاق
+                        </button>
+                    </div>
+                </div>
+
+                <!-- معلومات القماش -->
+                <div class="card mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">
+                            <i class="fas fa-info-circle me-2"></i>
+                            معلومات القماش
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <strong>اسم القماش:</strong><br>
+                                <?= htmlspecialchars($fabric['name']) ?>
+                            </div>
+                            <div class="col-md-2">
+                                <strong>الكود:</strong><br>
+                                <?= htmlspecialchars($fabric['code']) ?>
+                            </div>
+                            <div class="col-md-2">
+                                <strong>النوع:</strong><br>
+                                <?= htmlspecialchars($fabric['type'] ?? '-') ?>
+                            </div>
+                            <div class="col-md-2">
+                                <strong>اللون:</strong><br>
+                                <?= htmlspecialchars($fabric['color'] ?? '-') ?>
+                            </div>
+                            <div class="col-md-3">
+                                <strong>الكمية الحالية:</strong><br>
+                                <span class="badge bg-success fs-6">
+                                    <?= number_format($fabric['current_quantity'], 2) ?> <?= htmlspecialchars($fabric['unit']) ?>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- إحصائيات سريعة -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-arrow-up text-success fa-2x mb-2"></i>
+                                <h5><?= number_format($total_in, 2) ?></h5>
+                                <small class="text-muted">إجمالي الوارد</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-arrow-down text-danger fa-2x mb-2"></i>
+                                <h5><?= number_format($total_out, 2) ?></h5>
+                                <small class="text-muted">إجمالي الصادر</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-balance-scale text-info fa-2x mb-2"></i>
+                                <h5><?= number_format($total_in - $total_out, 2) ?></h5>
+                                <small class="text-muted">الرصيد المحسوب</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-money-bill-wave text-warning fa-2x mb-2"></i>
+                                <h5><?= number_format($total_cost, 2) ?></h5>
+                                <small class="text-muted">إجمالي التكلفة</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- جدول الحركات -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-list me-2"></i>
+                            سجل الحركات (<?= count($movements) ?> حركة)
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>التاريخ والوقت</th>
+                                        <th>نوع الحركة</th>
+                                        <th>الكمية</th>
+                                        <th>سعر الوحدة</th>
+                                        <th>إجمالي التكلفة</th>
+                                        <th>المرجع</th>
+                                        <th>المستخدم</th>
+                                        <th>ملاحظات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($movements as $movement): ?>
+                                        <tr>
+                                            <td><?= date('Y-m-d H:i:s', strtotime($movement['created_at'])) ?></td>
+                                            <td>
+                                                <?php
+                                                $movement_types = [
+                                                    'in' => ['وارد', 'success', 'arrow-up'],
+                                                    'out' => ['صادر', 'danger', 'arrow-down'],
+                                                    'transfer' => ['تحويل', 'info', 'exchange-alt'],
+                                                    'adjustment' => ['تعديل', 'warning', 'edit']
+                                                ];
+                                                $type_info = $movement_types[$movement['movement_type']] ?? ['غير محدد', 'secondary', 'question'];
+                                                ?>
+                                                <span class="badge bg-<?= $type_info[1] ?>">
+                                                    <i class="fas fa-<?= $type_info[2] ?> me-1"></i>
+                                                    <?= $type_info[0] ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <strong><?= number_format($movement['quantity'], 2) ?></strong>
+                                                <?= htmlspecialchars($fabric['unit']) ?>
+                                            </td>
+                                            <td>
+                                                <?= $movement['unit_cost'] ? number_format($movement['unit_cost'], 2) . ' ' . CURRENCY : '-' ?>
+                                            </td>
+                                            <td>
+                                                <?= $movement['total_cost'] ? number_format($movement['total_cost'], 2) . ' ' . CURRENCY : '-' ?>
+                                            </td>
+                                            <td>
+                                                <?php if ($movement['reference_type']): ?>
+                                                    <small class="text-muted">
+                                                        <?= htmlspecialchars($movement['reference_type']) ?>
+                                                        <?= $movement['reference_id'] ? '#' . $movement['reference_id'] : '' ?>
+                                                    </small>
+                                                <?php else: ?>
+                                                    -
+                                                <?php endif; ?>
+                                            </td>
+                                            <td><?= htmlspecialchars($movement['user_name'] ?? 'غير محدد') ?></td>
+                                            <td>
+                                                <?= $movement['notes'] ? htmlspecialchars($movement['notes']) : '-' ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

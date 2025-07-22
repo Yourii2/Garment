@@ -1,0 +1,309 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة نوع جديد
+if (isset($_POST['add_type'])) {
+    try {
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        
+        $stmt = $pdo->prepare("INSERT INTO accessory_types (name, description, created_at) VALUES (?, ?, NOW())");
+        $result = $stmt->execute([$name, $description]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة النوع بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: accessory_types.php');
+    exit;
+}
+
+// معالجة تحديث نوع
+if (isset($_POST['update_type'])) {
+    try {
+        $id = $_POST['type_id'];
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        
+        $stmt = $pdo->prepare("UPDATE accessory_types SET name = ?, description = ? WHERE id = ?");
+        $result = $stmt->execute([$name, $description, $id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم تحديث النوع بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: accessory_types.php');
+    exit;
+}
+
+// معالجة حذف نوع
+if (isset($_POST['delete_type'])) {
+    try {
+        $id = $_POST['type_id'];
+        
+        $stmt = $pdo->prepare("DELETE FROM accessory_types WHERE id = ?");
+        $result = $stmt->execute([$id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم حذف النوع بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: accessory_types.php');
+    exit;
+}
+
+// جلب الأنواع
+$stmt = $pdo->query("SELECT * FROM accessory_types ORDER BY name");
+$types = $stmt->fetchAll();
+
+include '../includes/header.php';
+$page_title = 'Accessory types';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-list me-2"></i>أنواع الإكسسوارات
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addTypeModal">
+                    <i class="fas fa-plus me-1"></i>إضافة نوع جديد
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- جدول الأنواع -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>قائمة أنواع الإكسسوارات
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>الاسم</th>
+                                    <th>الوصف</th>
+                                    <th>عدد الإكسسوارات</th>
+                                    <th>تاريخ الإضافة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($types)): ?>
+                                    <tr>
+                                        <td colspan="5" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا توجد أنواع متوفرة
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($types as $type): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($type['name']) ?></td>
+                                            <td><?= htmlspecialchars($type['description'] ?? 'لا يوجد وصف') ?></td>
+                                            <td>0</td>
+                                            <td><?= $type['created_at'] ?></td>
+                                            <td>
+                                                <button type="button" class="btn btn-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#editTypeModal" data-type-id="<?= $type['id'] ?>" data-type-name="<?= htmlspecialchars($type['name']) ?>" data-type-description="<?= htmlspecialchars($type['description'] ?? '') ?>">
+                                                    <i class="fas fa-edit me-1"></i>تعديل
+                                                </button>
+                                                <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteTypeModal" data-type-id="<?= $type['id'] ?>">
+                                                    <i class="fas fa-trash me-1"></i>حذف
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">الأنواع الشائعة</h5>
+                            <p class="card-text">بعض أنواع الإكسسوارات الشائعة في صناعة الملابس:</p>
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <span class="badge bg-primary">أزرار</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <span class="badge bg-secondary">سحابات</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <span class="badge bg-success">خيوط</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <span class="badge bg-warning">شرائط</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+<!-- مودال إضافة نوع جديد -->
+<div class="modal fade" id="addTypeModal" tabindex="-1" aria-labelledby="addTypeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addTypeModalLabel">إضافة نوع جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form method="POST" action="">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">اسم النوع</label>
+                        <input type="text" class="form-control" id="name" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="description" class="form-label">وصف النوع (اختياري)</label>
+                        <textarea class="form-control" id="description" name="description" rows="3"></textarea>
+                    </div>
+                    <button type="submit" name="add_type" class="btn btn-primary">إضافة النوع</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- مودال تحديث نوع -->
+<div class="modal fade" id="editTypeModal" tabindex="-1" aria-labelledby="editTypeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editTypeModalLabel">تعديل النوع</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form method="POST" action="">
+                    <input type="hidden" name="type_id" id="editTypeId">
+                    <div class="mb-3">
+                        <label for="editName" class="form-label">اسم النوع</label>
+                        <input type="text" class="form-control" id="editName" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editDescription" class="form-label">وصف النوع (اختياري)</label>
+                        <textarea class="form-control" id="editDescription" name="description" rows="3"></textarea>
+                    </div>
+                    <button type="submit" name="update_type" class="btn btn-primary">تحديث النوع</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- مودال حذف نوع -->
+<div class="modal fade" id="deleteTypeModal" tabindex="-1" aria-labelledby="deleteTypeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="deleteTypeModalLabel">حذف النوع</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>هل أنت متأكد من حذف هذا النوع؟</p>
+            </div>
+            <div class="modal-footer">
+                <form method="POST" action="">
+                    <input type="hidden" name="type_id" id="deleteTypeId">
+                    <button type="submit" name="delete_type" class="btn btn-danger">حذف</button>
+                </form>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.querySelectorAll('[data-bs-toggle="modal"][data-type-id]').forEach(button => {
+        button.addEventListener('click', function() {
+            const typeId = this.getAttribute('data-type-id');
+            const typeName = this.getAttribute('data-type-name');
+            const typeDescription = this.getAttribute('data-type-description');
+
+            document.getElementById('editTypeId').value = typeId;
+            document.getElementById('editName').value = typeName;
+            document.getElementById('editDescription').value = typeDescription;
+        });
+    });
+
+    document.querySelectorAll('[data-bs-toggle="modal"][data-type-id]').forEach(button => {
+        button.addEventListener('click', function() {
+            const typeId = this.getAttribute('data-type-id');
+            document.getElementById('deleteTypeId').value = typeId;
+        });
+    });
+</script>
+
+</body>
+</html>
+
+</body>
+</html>

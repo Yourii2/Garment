@@ -1,0 +1,553 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+checkPermissionAccess('inventory_management');
+
+$page_title = 'حركات المخزون';
+
+// معالجة إضافة حركة إدخال
+if (isset($_POST['add_in_movement']) && $_POST['add_in_movement']) {
+    if (!validateCSRF($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error_message'] = 'رمز الأمان غير صحيح';
+        header('Location: movements.php');
+        exit;
+    }
+    
+    if (!checkRateLimit('add_movement', 20, 60)) {
+        $_SESSION['error_message'] = 'تم تجاوز الحد الأقصى للطلبات. يرجى المحاولة لاحق';
+        header('Location: movements.php');
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        $data = [
+            'fabric_id' => cleanInput($_POST['fabric_id'] ?? ''),
+            'accessory_id' => cleanInput($_POST['accessory_id'] ?? ''),
+            'quantity' => cleanInput($_POST['quantity'] ?? ''),
+            'unit_cost' => cleanInput($_POST['unit_cost'] ?? '0'),
+            'reference_type' => cleanInput($_POST['reference_type'] ?? ''),
+            'notes' => cleanInput($_POST['notes'] ?? '')
+        ];
+        
+        // التحقق من صحة البيانات
+        $validator = validateInventoryMovement($data);
+        if ($validator->hasErrors()) {
+            throw new Exception($validator->getFirstError());
+        }
+        
+        $quantity = floatval($data['quantity']);
+        $unit_cost = floatval($data['unit_cost']);
+        $total_cost = $quantity * $unit_cost;
+        
+        // إدراج حركة المخزون
+        $stmt = $pdo->prepare("
+            INSERT INTO inventory_movements 
+            (fabric_id, accessory_id, type, quantity, unit_cost, total_cost, reference_type, notes, user_id, created_at) 
+            VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, NOW())
+        ");
+        $stmt->execute([
+            $data['fabric_id'] ?: null,
+            $data['accessory_id'] ?: null,
+            $quantity,
+            $unit_cost,
+            $total_cost,
+            $data['reference_type'],
+            $data['notes'],
+            $_SESSION['user_id']
+        ]);
+        
+        // تحديث المخزون
+        if ($data['fabric_id']) {
+            $stmt = $pdo->prepare("
+                UPDATE fabric_types 
+                SET current_quantity = COALESCE(current_quantity, 0) + ?, 
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $stmt->execute([$quantity, $data['fabric_id']]);
+            
+            logActivity('fabric_stock_in', "إدخال {$quantity} وحدة من القماش ID: {$data['fabric_id']}");
+        } elseif ($data['accessory_id']) {
+            $stmt = $pdo->prepare("
+                UPDATE accessories 
+                SET current_quantity = COALESCE(current_quantity, 0) + ?, 
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $stmt->execute([$quantity, $data['accessory_id']]);
+            
+            logActivity('accessory_stock_in', "إدخال {$quantity} وحدة من الإكسسوار ID: {$data['accessory_id']}");
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم إدخال المخزون بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $error_result = handleDatabaseError($e, 'إدخال المخزون');
+        $_SESSION['error_message'] = $error_result['message'];
+        logActivity('movement_error', $error_result['message'], 'error');
+    }
+    
+    header('Location: movements.php');
+    exit;
+}
+
+// معالجة إضافة حركة إخراج
+if (isset($_POST['add_out_movement']) && $_POST['add_out_movement']) {
+    if (!validateCSRF($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error_message'] = 'رمز الأمان غير صحيح';
+        header('Location: movements.php');
+        exit;
+    }
+    
+    if (!checkRateLimit('add_movement', 20, 60)) {
+        $_SESSION['error_message'] = 'تم تجاوز الحد الأقصى للطلبات. يرجى المحاولة لاحق';
+        header('Location: movements.php');
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        $data = [
+            'fabric_id' => cleanInput($_POST['fabric_id'] ?? ''),
+            'accessory_id' => cleanInput($_POST['accessory_id'] ?? ''),
+            'quantity' => cleanInput($_POST['quantity'] ?? ''),
+            'reference_type' => cleanInput($_POST['reference_type'] ?? ''),
+            'notes' => cleanInput($_POST['notes'] ?? '')
+        ];
+        
+        // التحقق من صحة البيانات
+        $validator = validateInventoryMovement($data);
+        if ($validator->hasErrors()) {
+            throw new Exception($validator->getFirstError());
+        }
+        
+        $quantity = floatval($data['quantity']);
+        
+        // التحقق من توفر الكمية
+        if ($data['fabric_id']) {
+            $stmt = $pdo->prepare("SELECT COALESCE(current_quantity, 0) as current_quantity FROM fabric_types WHERE id = ?");
+            $stmt->execute([$data['fabric_id']]);
+            $current_stock = $stmt->fetchColumn();
+            
+            if ($current_stock < $quantity) {
+                throw new Exception("الكمية المطلوبة ({$quantity}) أكبر من المتوفر في المخزون ({$current_stock})");
+            }
+        } elseif ($data['accessory_id']) {
+            $stmt = $pdo->prepare("SELECT COALESCE(current_quantity, 0) as current_quantity FROM accessories WHERE id = ?");
+            $stmt->execute([$data['accessory_id']]);
+            $current_stock = $stmt->fetchColumn();
+            
+            if ($current_stock < $quantity) {
+                throw new Exception("الكمية المطلوبة ({$quantity}) أكبر من المتوفر في المخزون ({$current_stock})");
+            }
+        }
+        
+        // إدراج حركة المخزون
+        $stmt = $pdo->prepare("
+            INSERT INTO inventory_movements 
+            (fabric_id, accessory_id, type, quantity, reference_type, notes, user_id, created_at) 
+            VALUES (?, ?, 'out', ?, ?, ?, ?, NOW())
+        ");
+        $stmt->execute([
+            $data['fabric_id'] ?: null,
+            $data['accessory_id'] ?: null,
+            $quantity,
+            $data['reference_type'],
+            $data['notes'],
+            $_SESSION['user_id']
+        ]);
+        
+        // تحديث المخزون
+        if ($data['fabric_id']) {
+            $stmt = $pdo->prepare("
+                UPDATE fabric_types 
+                SET current_quantity = COALESCE(current_quantity, 0) - ?, 
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $stmt->execute([$quantity, $data['fabric_id']]);
+            
+            logActivity('fabric_stock_out', "إخراج {$quantity} وحدة من القماش ID: {$data['fabric_id']}");
+        } elseif ($data['accessory_id']) {
+            $stmt = $pdo->prepare("
+                UPDATE accessories 
+                SET current_quantity = COALESCE(current_quantity, 0) - ?, 
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $stmt->execute([$quantity, $data['accessory_id']]);
+            
+            logActivity('accessory_stock_out', "إخراج {$quantity} وحدة من الإكسسوار ID: {$data['accessory_id']}");
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم إخراج المخزون بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $error_result = handleDatabaseError($e, 'إخراج المخزون');
+        $_SESSION['error_message'] = $error_result['message'];
+        logActivity('movement_error', $error_result['message'], 'error');
+    }
+    
+    header('Location: movements.php');
+    exit;
+}
+
+// جلب البيانات للعرض
+try {
+    // جلب الأقمشة النشطة
+    $stmt = $pdo->query("SELECT id, name FROM fabric_types WHERE is_active = 1 ORDER BY name");
+    $fabrics = $stmt->fetchAll();
+    
+    // جلب الإكسسوارات النشطة
+    $stmt = $pdo->query("SELECT id, name FROM accessories WHERE is_active = 1 ORDER BY name");
+    $accessories = $stmt->fetchAll();
+    
+    // جلب آخر الحركات
+    $stmt = $pdo->query("
+        SELECT im.*, 
+               COALESCE(ft.name, 'غير محدد') as fabric_name, 
+               COALESCE(a.name, 'غير محدد') as accessory_name,
+               COALESCE(u.full_name, 'غير محدد') as user_name
+        FROM inventory_movements im
+        LEFT JOIN fabric_types ft ON im.fabric_id = ft.id
+        LEFT JOIN accessories a ON im.accessory_id = a.id
+        LEFT JOIN users u ON im.user_id = u.id
+        ORDER BY im.created_at DESC 
+        LIMIT 50
+    ");
+    $movements = $stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_result = handleDatabaseError($e, 'تحميل بيانات الحركات');
+    $_SESSION['error_message'] = $error_result['message'];
+    $fabrics = [];
+    $accessories = [];
+    $movements = [];
+}
+
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2"><?= $page_title ?></h1>
+                <div class="btn-toolbar mb-2 mb-md-0">
+                    <div class="btn-group me-2">
+                        <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#addInMovementModal">
+                            <i class="fas fa-plus"></i> إدخال مخزون
+                        </button>
+                        <button type="button" class="btn btn-sm btn-danger" data-bs-toggle="modal" data-bs-target="#addOutMovementModal">
+                            <i class="fas fa-minus"></i> إخراج مخزون
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- عرض الرسائل -->
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle me-2"></i>
+                    <?= htmlspecialchars($_SESSION['success_message']) ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <i class="fas fa-exclamation-circle me-2"></i>
+                    <?= htmlspecialchars($_SESSION['error_message']) ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- جدول الحركات -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">آخر حركات المخزون</h5>
+                </div>
+                <div class="card-body">
+                    <?php if (!empty($movements)): ?>
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>النوع</th>
+                                        <th>الصنف</th>
+                                        <th>الكمية</th>
+                                        <th>التكلفة</th>
+                                        <th>المرجع</th>
+                                        <th>المستخدم</th>
+                                        <th>التاريخ</th>
+                                        <th>ملاحظات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($movements as $movement): ?>
+                                        <tr>
+                                            <td>
+                                                <span class="badge bg-<?= $movement['type'] === 'in' ? 'success' : 'danger' ?>">
+                                                    <?= $movement['type'] === 'in' ? 'إدخال' : 'إخراج' ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?= htmlspecialchars($movement['fabric_name'] !== 'غير محدد' ? $movement['fabric_name'] : $movement['accessory_name']) ?>
+                                            </td>
+                                            <td><?= number_format($movement['quantity'], 2) ?></td>
+                                            <td>
+                                                <?php if ($movement['total_cost']): ?>
+                                                    <?= number_format($movement['total_cost'], 2) ?> <?= CURRENCY_SYMBOL ?>
+                                                <?php else: ?>
+                                                    -
+                                                <?php endif; ?>
+                                            </td>
+                                            <td><?= htmlspecialchars($movement['reference_type']) ?></td>
+                                            <td><?= htmlspecialchars($movement['user_name']) ?></td>
+                                            <td><?= date('Y-m-d H:i', strtotime($movement['created_at'])) ?></td>
+                                            <td><?= htmlspecialchars($movement['notes']) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php else: ?>
+                        <div class="text-center py-4">
+                            <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                            <p class="text-muted">لا توجد حركات مخزون</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- نموذج إدخال المخزون -->
+<div class="modal fade" id="addInMovementModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?= generateCSRF() ?>">
+                <div class="modal-header">
+                    <h5 class="modal-title">إدخال مخزون</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">نوع الصنف</label>
+                        <select class="form-select" id="inItemType" onchange="toggleInItemSelect()">
+                            <option value="">اختر النوع</option>
+                            <option value="fabric">قماش</option>
+                            <option value="accessory">إكسسوار</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3" id="inFabricSelect" style="display: none;">
+                        <label class="form-label">القماش</label>
+                        <select class="form-select" name="fabric_id">
+                            <option value="">اختر القماش</option>
+                            <?php foreach ($fabrics as $fabric): ?>
+                                <option value="<?= $fabric['id'] ?>"><?= htmlspecialchars($fabric['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3" id="inAccessorySelect" style="display: none;">
+                        <label class="form-label">الإكسسوار</label>
+                        <select class="form-select" name="accessory_id">
+                            <option value="">اختر الإكسسوار</option>
+                            <?php foreach ($accessories as $accessory): ?>
+                                <option value="<?= $accessory['id'] ?>"><?= htmlspecialchars($accessory['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">الكمية *</label>
+                        <input type="number" class="form-control" name="quantity" step="0.01" min="0.01" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">تكلفة الوحدة</label>
+                        <input type="number" class="form-control" name="unit_cost" step="0.01" min="0">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">نوع المرجع</label>
+                        <select class="form-select" name="reference_type">
+                            <option value="">اختر النوع</option>
+                            <option value="purchase">شراء</option>
+                            <option value="return">مرتجع</option>
+                            <option value="adjustment">تسوية</option>
+                            <option value="transfer">تحويل</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea class="form-control" name="notes" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_in_movement" value="1" class="btn btn-success">إدخال</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- نموذج إخراج المخزون -->
+<div class="modal fade" id="addOutMovementModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?= generateCSRF() ?>">
+                <div class="modal-header">
+                    <h5 class="modal-title">إخراج مخزون</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">نوع الصنف</label>
+                        <select class="form-select" id="outItemType" onchange="toggleOutItemSelect()">
+                            <option value="">اختر النوع</option>
+                            <option value="fabric">قماش</option>
+                            <option value="accessory">إكسسوار</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3" id="outFabricSelect" style="display: none;">
+                        <label class="form-label">القماش</label>
+                        <select class="form-select" name="fabric_id" onchange="checkStock(this, 'fabric')">
+                            <option value="">اختر القماش</option>
+                            <?php foreach ($fabrics as $fabric): ?>
+                                <option value="<?= $fabric['id'] ?>"><?= htmlspecialchars($fabric['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="text-muted" id="fabricStock"></small>
+                    </div>
+                    
+                    <div class="mb-3" id="outAccessorySelect" style="display: none;">
+                        <label class="form-label">الإكسسوار</label>
+                        <select class="form-select" name="accessory_id" onchange="checkStock(this, 'accessory')">
+                            <option value="">اختر الإكسسوار</option>
+                            <?php foreach ($accessories as $accessory): ?>
+                                <option value="<?= $accessory['id'] ?>"><?= htmlspecialchars($accessory['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="text-muted" id="accessoryStock"></small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">الكمية *</label>
+                        <input type="number" class="form-control" name="quantity" step="0.01" min="0.01" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">نوع المرجع</label>
+                        <select class="form-select" name="reference_type">
+                            <option value="">اختر النوع</option>
+                            <option value="production">إنتاج</option>
+                            <option value="sale">بيع</option>
+                            <option value="damage">تالف</option>
+                            <option value="adjustment">تسوية</option>
+                            <option value="transfer">تحويل</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea class="form-control" name="notes" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_out_movement" value="1" class="btn btn-danger">إخراج</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleInItemSelect() {
+    const type = document.getElementById('inItemType').value;
+    const fabricSelect = document.getElementById('inFabricSelect');
+    const accessorySelect = document.getElementById('inAccessorySelect');
+    
+    if (type === 'fabric') {
+        fabricSelect.style.display = 'block';
+        accessorySelect.style.display = 'none';
+        accessorySelect.querySelector('select').value = '';
+    } else if (type === 'accessory') {
+        fabricSelect.style.display = 'none';
+        accessorySelect.style.display = 'block';
+        fabricSelect.querySelector('select').value = '';
+    } else {
+        fabricSelect.style.display = 'none';
+        accessorySelect.style.display = 'none';
+        fabricSelect.querySelector('select').value = '';
+        accessorySelect.querySelector('select').value = '';
+    }
+}
+
+function toggleOutItemSelect() {
+    const type = document.getElementById('outItemType').value;
+    const fabricSelect = document.getElementById('outFabricSelect');
+    const accessorySelect = document.getElementById('outAccessorySelect');
+    
+    if (type === 'fabric') {
+        fabricSelect.style.display = 'block';
+        accessorySelect.style.display = 'none';
+        accessorySelect.querySelector('select').value = '';
+        document.getElementById('accessoryStock').textContent = '';
+    } else if (type === 'accessory') {
+        fabricSelect.style.display = 'none';
+        accessorySelect.style.display = 'block';
+        fabricSelect.querySelector('select').value = '';
+        document.getElementById('fabricStock').textContent = '';
+    } else {
+        fabricSelect.style.display = 'none';
+        accessorySelect.style.display = 'none';
+        fabricSelect.querySelector('select').value = '';
+        accessorySelect.querySelector('select').value = '';
+        document.getElementById('fabricStock').textContent = '';
+        document.getElementById('accessoryStock').textContent = '';
+    }
+}
+
+function checkStock(select, type) {
+    if (!select.value) return;
+    
+    fetch(`get_stock.php?type=${type}&id=${select.value}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById(type + 'Stock').textContent = 
+                    `المتوفر في المخزون: ${data.quantity}`;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+        });
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
+
+

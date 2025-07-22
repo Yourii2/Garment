@@ -1,0 +1,111 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'تقرير مبيعات العملاء';
+
+// فلاتر
+$start_date = $_GET['start_date'] ?? date('Y-m-01');
+$end_date = $_GET['end_date'] ?? date('Y-m-d');
+
+// جلب بيانات مبيعات العملاء
+$customer_sales = [];
+
+try {
+    $stmt = $pdo->prepare("
+        SELECT 
+            COALESCE(c.name, o.customer_name) as customer_name,
+            o.customer_phone,
+            COUNT(o.id) as total_orders,
+            SUM(COALESCE(oi.quantity * oi.unit_price, 0)) as total_sales,
+            AVG(COALESCE(oi.quantity * oi.unit_price, 0)) as avg_order_value,
+            MAX(o.created_at) as last_order_date
+        FROM orders o
+        LEFT JOIN customers c ON o.customer_id = c.id
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE DATE(o.created_at) BETWEEN ? AND ?
+        GROUP BY COALESCE(c.id, o.customer_name), o.customer_phone
+        ORDER BY total_sales DESC
+    ");
+    
+    $stmt->execute([$start_date, $end_date]);
+    $customer_sales = $stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب بيانات مبيعات العملاء: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">تقرير مبيعات العملاء</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">من تاريخ</label>
+                            <input type="date" class="form-control" name="start_date" value="<?= $start_date ?>">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">إلى تاريخ</label>
+                            <input type="date" class="form-control" name="end_date" value="<?= $end_date ?>">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">تطبيق الفلاتر</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- جدول مبيعات العملاء -->
+            <div class="card">
+                <div class="card-header">
+                    <h5>مبيعات العملاء من <?= $start_date ?> إلى <?= $end_date ?></h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>اسم العميل</th>
+                                    <th>الهاتف</th>
+                                    <th>عدد الطلبيات</th>
+                                    <th>إجمالي المبيعات</th>
+                                    <th>متوسط الطلبية</th>
+                                    <th>آخر طلبية</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($customer_sales as $customer): ?>
+                                <tr>
+                                    <td><?= $customer['customer_name'] ?></td>
+                                    <td><?= $customer['customer_phone'] ?></td>
+                                    <td><?= $customer['total_orders'] ?></td>
+                                    <td><?= number_format($customer['total_sales'], 2) ?> ج.م</td>
+                                    <td><?= number_format($customer['avg_order_value'], 2) ?> ج.م</td>
+                                    <td><?= date('Y-m-d', strtotime($customer['last_order_date'])) ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>

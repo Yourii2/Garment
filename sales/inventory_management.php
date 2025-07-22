@@ -1,0 +1,456 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة تحديث حالة المنتج
+if (isset($_POST['update_product_status'])) {
+    try {
+        $item_id = $_POST['item_id'];
+        $new_status = $_POST['new_status'];
+        $notes = $_POST['notes'] ?? '';
+        
+        $stmt = $pdo->prepare("
+            UPDATE sales_invoice_items 
+            SET status = ?, notes = CONCAT(COALESCE(notes, ''), '\n', ?)
+            WHERE id = ?
+        ");
+        $stmt->execute([$new_status, "تحديث الحالة: $new_status - $notes", $item_id]);
+        
+        $_SESSION['success_message'] = 'تم تحديث حالة المنتج بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: inventory_management.php');
+    exit;
+}
+
+// جلب المنتجات المتاحة في المخزن (المستلمة والجاهزة للبيع)
+$stmt = $pdo->query("
+    SELECT 
+        sii.id,
+        sii.quantity_received,
+        sii.quality_grade,
+        sii.status,
+        sii.notes,
+        si.invoice_number,
+        si.invoice_date,
+        si.confirmed_at,
+        co.cutting_number,
+        p.name as product_name,
+        p.code as product_code,
+        p.description as product_description,
+        u.username as confirmed_by
+    FROM sales_invoice_items sii
+    JOIN sales_invoices si ON sii.invoice_id = si.id
+    JOIN cutting_orders co ON sii.cutting_order_id = co.id
+    JOIN products p ON sii.product_id = p.id
+    LEFT JOIN users u ON si.confirmed_by = u.id
+    WHERE si.status = 'confirmed' 
+    AND sii.quantity_received > 0
+    ORDER BY si.confirmed_at DESC, sii.id DESC
+");
+$inventory_items = $stmt->fetchAll();
+
+// إحصائيات المخزن
+$stats = [
+    'total_items' => 0,
+    'total_quantity' => 0,
+    'grade_a' => 0,
+    'grade_b' => 0,
+    'grade_c' => 0,
+    'ready_for_sale' => 0,
+    'sold' => 0
+];
+
+foreach ($inventory_items as $item) {
+    $stats['total_items']++;
+    $stats['total_quantity'] += $item['quantity_received'];
+    $stats['grade_' . strtolower($item['quality_grade'])]++;
+    
+    if ($item['status'] == 'received') {
+        $stats['ready_for_sale']++;
+    } elseif ($item['status'] == 'sold') {
+        $stats['sold']++;
+    }
+}
+
+$page_title = 'إدارة مخزن المنتجات';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-boxes me-2"></i><?= $page_title ?>
+                </h1>
+                <div class="btn-toolbar">
+                    <a href="../production/sales_invoices.php" class="btn btn-outline-primary">
+                        <i class="fas fa-file-invoice me-1"></i>فواتير الإرسال
+                    </a>
+                </div>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- إحصائيات المخزن -->
+            <div class="row mb-4">
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-primary"><?= number_format($stats['total_items']) ?></h5>
+                            <p class="card-text">إجمالي المنتجات</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-info"><?= number_format($stats['total_quantity']) ?></h5>
+                            <p class="card-text">إجمالي الكمية</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-success"><?= $stats['grade_a'] ?></h5>
+                            <p class="card-text">درجة A</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-warning"><?= $stats['grade_b'] ?></h5>
+                            <p class="card-text">درجة B</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-danger"><?= $stats['grade_c'] ?></h5>
+                            <p class="card-text">درجة C</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-success"><?= $stats['ready_for_sale'] ?></h5>
+                            <p class="card-text">جاهز للبيع</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- فلاتر البحث -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <label class="form-label">البحث بالمنتج</label>
+                            <input type="text" id="searchProduct" class="form-control" placeholder="اسم المنتج أو الكود">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">درجة الجودة</label>
+                            <select id="filterGrade" class="form-select">
+                                <option value="">جميع الدرجات</option>
+                                <option value="A">A - ممتاز</option>
+                                <option value="B">B - جيد</option>
+                                <option value="C">C - مقبول</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">الحالة</label>
+                            <select id="filterStatus" class="form-select">
+                                <option value="">جميع الحالات</option>
+                                <option value="received">جاهز للبيع</option>
+                                <option value="partial">مستلم جزئياً</option>
+                                <option value="sold">مباع</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">تاريخ الاستلام</label>
+                            <input type="date" id="filterDate" class="form-control">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="button" class="btn btn-secondary d-block w-100" onclick="clearFilters()">
+                                <i class="fas fa-times me-1"></i>مسح الفلاتر
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- جدول المنتجات -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>منتجات المخزن
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover" id="inventoryTable">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>المنتج</th>
+                                    <th>رقم الأمر</th>
+                                    <th>فاتورة الإرسال</th>
+                                    <th>الكمية</th>
+                                    <th>درجة الجودة</th>
+                                    <th>تاريخ الاستلام</th>
+                                    <th>الحالة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($inventory_items)): ?>
+                                    <tr>
+                                        <td colspan="8" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا توجد منتجات في المخزن
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($inventory_items as $item): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?= htmlspecialchars($item['product_name']) ?></strong><br>
+                                                <small class="text-muted"><?= htmlspecialchars($item['product_code']) ?></small>
+                                                <?php if ($item['product_description']): ?>
+                                                    <br><small class="text-info"><?= htmlspecialchars($item['product_description']) ?></small>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td><?= htmlspecialchars($item['cutting_number']) ?></td>
+                                            <td>
+                                                <a href="../production/view_sales_invoice.php?id=<?= $item['id'] ?>" class="text-decoration-none">
+                                                    <?= htmlspecialchars($item['invoice_number']) ?>
+                                                </a><br>
+                                                <small class="text-muted"><?= date('Y-m-d', strtotime($item['invoice_date'])) ?></small>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-primary fs-6"><?= number_format($item['quantity_received']) ?></span>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-<?= $item['quality_grade'] == 'A' ? 'success' : ($item['quality_grade'] == 'B' ? 'warning' : 'danger') ?> fs-6">
+                                                    <?= $item['quality_grade'] ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?= $item['confirmed_at'] ? date('Y-m-d H:i', strtotime($item['confirmed_at'])) : '-' ?><br>
+                                                <?php if ($item['confirmed_by']): ?>
+                                                    <small class="text-muted">بواسطة: <?= htmlspecialchars($item['confirmed_by']) ?></small>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-<?= $item['status'] == 'received' ? 'success' : ($item['status'] == 'partial' ? 'warning' : 'info') ?> fs-6">
+                                                    <?= $item['status'] == 'received' ? 'جاهز للبيع' : ($item['status'] == 'partial' ? 'مستلم جزئياً' : 'أخرى') ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <div class="btn-group btn-group-sm">
+                                                    <button type="button" class="btn btn-outline-primary" 
+                                                            onclick="updateProductStatus(<?= $item['id'] ?>, '<?= htmlspecialchars($item['product_name']) ?>', '<?= $item['status'] ?>')">
+                                                        <i class="fas fa-edit"></i>
+                                                    </button>
+                                                    <button type="button" class="btn btn-outline-info" 
+                                                            onclick="viewProductDetails(<?= $item['id'] ?>)">
+                                                        <i class="fas fa-eye"></i>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- مودال تحديث حالة المنتج -->
+<div class="modal fade" id="updateStatusModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تحديث حالة المنتج</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="item_id" id="update_item_id">
+                    
+                    <div id="product-info" class="alert alert-info">
+                        جاري تحميل معلومات المنتج...
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">الحالة الجديدة *</label>
+                        <select name="new_status" class="form-select" required>
+                            <option value="received">جاهز للبيع</option>
+                            <option value="sold">مباع</option>
+                            <option value="returned">مرتجع</option>
+                            <option value="damaged">تالف</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="3" placeholder="ملاحظات حول تحديث الحالة..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="update_product_status" class="btn btn-primary">
+                        <i class="fas fa-save me-1"></i>حفظ التحديث
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateProductStatus(itemId, productName, currentStatus) {
+    document.getElementById('update_item_id').value = itemId;
+    document.getElementById('product-info').innerHTML = `
+        <strong>المنتج:</strong> ${productName}<br>
+        <strong>الحالة الحالية:</strong> ${getStatusText(currentStatus)}
+    `;
+    
+    new bootstrap.Modal(document.getElementById('updateStatusModal')).show();
+}
+
+function getStatusText(status) {
+    switch(status) {
+        case 'received': return 'جاهز للبيع';
+        case 'partial': return 'مستلم جزئياً';
+        case 'sold': return 'مباع';
+        case 'returned': return 'مرتجع';
+        case 'damaged': return 'تالف';
+        default: return status;
+    }
+}
+
+function viewProductDetails(itemId) {
+    // يمكن إضافة مودال لعرض تفاصيل المنتج
+    alert('سيتم إضافة عرض التفاصيل قريباً');
+}
+
+function clearFilters() {
+    document.getElementById('searchProduct').value = '';
+    document.getElementById('filterGrade').value = '';
+    document.getElementById('filterStatus').value = '';
+    document.getElementById('filterDate').value = '';
+    filterTable();
+}
+
+// فلترة الجدول
+document.getElementById('searchProduct').addEventListener('input', filterTable);
+document.getElementById('filterGrade').addEventListener('change', filterTable);
+document.getElementById('filterStatus').addEventListener('change', filterTable);
+document.getElementById('filterDate').addEventListener('change', filterTable);
+
+function filterTable() {
+    const searchProduct = document.getElementById('searchProduct').value.toLowerCase();
+    const filterGrade = document.getElementById('filterGrade').value;
+    const filterStatus = document.getElementById('filterStatus').value;
+    const filterDate = document.getElementById('filterDate').value;
+    
+    const rows = document.querySelectorAll('#inventoryTable tbody tr');
+    
+    rows.forEach(row => {
+        if (row.cells.length === 1) return; // تجاهل صف "لا توجد منتجات"
+        
+        const productText = row.cells[0].textContent.toLowerCase();
+        const grade = row.cells[4].textContent.trim();
+        const status = row.cells[6].textContent.trim();
+        const date = row.cells[5].textContent.split(' ')[0]; // أخذ التاريخ فقط
+        
+        let show = true;
+        
+        if (searchProduct && !productText.includes(searchProduct)) {
+            show = false;
+        }
+        
+        if (filterGrade && !grade.includes(filterGrade)) {
+            show = false;
+        }
+        
+        if (filterStatus) {
+            const statusMap = {
+                'received': 'جاهز للبيع',
+                'partial': 'مستلم جزئياً',
+                'sold': 'مباع'
+            };
+            if (!status.includes(statusMap[filterStatus])) {
+                show = false;
+            }
+        }
+        
+        if (filterDate && !date.includes(filterDate)) {
+            show = false;
+        }
+        
+        row.style.display = show ? '' : 'none';
+    });
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

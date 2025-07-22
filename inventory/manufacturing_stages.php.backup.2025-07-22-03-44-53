@@ -1,0 +1,391 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة مرحلة جديدة
+if (isset($_POST['add_stage'])) {
+    try {
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        $is_paid = isset($_POST['is_paid']) ? 1 : 0;
+        $cost_per_unit = $_POST['cost_per_unit'] ?? 0;
+        $estimated_time_minutes = $_POST['estimated_time_minutes'] ?? 0;
+        $sort_order = $_POST['sort_order'] ?? 0;
+        
+        $stmt = $pdo->prepare("INSERT INTO manufacturing_stages (name, description, is_paid, cost_per_unit, estimated_time_minutes, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())");
+        $result = $stmt->execute([$name, $description, $is_paid, $cost_per_unit, $estimated_time_minutes, $sort_order]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة المرحلة بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: manufacturing_stages.php');
+    exit;
+}
+
+// معالجة التعديل
+if (isset($_POST['edit_stage'])) {
+    try {
+        $id = $_POST['stage_id'];
+        $name = $_POST['name'];
+        $description = $_POST['description'] ?? '';
+        $is_paid = isset($_POST['is_paid']) ? 1 : 0;
+        $cost_per_unit = $_POST['cost_per_unit'] ?? 0;
+        $estimated_time_minutes = $_POST['estimated_time_minutes'] ?? 0;
+        $sort_order = $_POST['sort_order'] ?? 0;
+        
+        $stmt = $pdo->prepare("UPDATE manufacturing_stages SET name = ?, description = ?, is_paid = ?, cost_per_unit = ?, estimated_time_minutes = ?, sort_order = ? WHERE id = ?");
+        $result = $stmt->execute([$name, $description, $is_paid, $cost_per_unit, $estimated_time_minutes, $sort_order, $id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم تحديث المرحلة بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: manufacturing_stages.php');
+    exit;
+}
+
+// معالجة الحذف
+if (isset($_POST['delete_stage'])) {
+    try {
+        $id = $_POST['stage_id'];
+        
+        $stmt = $pdo->prepare("DELETE FROM manufacturing_stages WHERE id = ?");
+        $result = $stmt->execute([$id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم حذف المرحلة بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: manufacturing_stages.php');
+    exit;
+}
+
+// جلب المراحل
+$stmt = $pdo->query("SELECT * FROM manufacturing_stages ORDER BY sort_order ASC, name ASC");
+$stages = $stmt->fetchAll();
+
+$page_title = 'مراحل الإنتاج';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-cogs text-primary me-2"></i>
+                    مراحل الإنتاج
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStageModal">
+                    <i class="fas fa-plus me-2"></i>إضافة مرحلة جديدة
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <i class="fas fa-check-circle me-2"></i>
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <i class="fas fa-exclamation-circle me-2"></i>
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>قائمة مراحل الإنتاج
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>الترتيب</th>
+                                    <th>اسم المرحلة</th>
+                                    <th>الوصف</th>
+                                    <th>مدفوعة الأجر</th>
+                                    <th>التكلفة/الوحدة</th>
+                                    <th>الوقت المقدر (دقيقة)</th>
+                                    <th>الحالة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($stages)): ?>
+                                    <tr>
+                                        <td colspan="8" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا توجد مراحل إنتاج مسجلة
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($stages as $stage): ?>
+                                        <tr>
+                                            <td><?= $stage['sort_order'] ?></td>
+                                            <td>
+                                                <strong><?= htmlspecialchars($stage['name']) ?></strong>
+                                            </td>
+                                            <td><?= htmlspecialchars($stage['description']) ?></td>
+                                            <td>
+                                                <?php if ($stage['is_paid']): ?>
+                                                    <span class="badge bg-success">نعم</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary">لا</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td><?= number_format($stage['cost_per_unit'], 2) ?> ج.م</td>
+                                            <td><?= $stage['estimated_time_minutes'] ?> دقيقة</td>
+                                            <td>
+                                                <?php if ($stage['is_active']): ?>
+                                                    <span class="badge bg-success">نشط</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-danger">غير نشط</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <div class="btn-group" role="group">
+                                                    <button type="button" class="btn btn-sm btn-outline-primary" 
+                                                            onclick="editStage(<?= htmlspecialchars(json_encode($stage)) ?>)">
+                                                        <i class="fas fa-edit"></i>
+                                                    </button>
+                                                    <button type="button" class="btn btn-sm btn-outline-danger" 
+                                                            onclick="deleteStage(<?= $stage['id'] ?>, '<?= htmlspecialchars($stage['name']) ?>')">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة مرحلة جديدة -->
+<div class="modal fade" id="addStageModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-plus me-2"></i>إضافة مرحلة جديدة
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم المرحلة *</label>
+                                <input type="text" name="name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">ترتيب المرحلة</label>
+                                <input type="number" name="sort_order" class="form-control" value="0">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الوصف</label>
+                        <textarea name="description" class="form-control" rows="3"></textarea>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="is_paid" id="is_paid" checked>
+                                    <label class="form-check-label" for="is_paid">
+                                        مرحلة مدفوعة الأجر
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label class="form-label">التكلفة لكل وحدة</label>
+                                <input type="number" name="cost_per_unit" class="form-control" step="0.01" value="0">
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label class="form-label">الوقت المقدر (دقيقة)</label>
+                                <input type="number" name="estimated_time_minutes" class="form-control" value="0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_stage" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>حفظ
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تعديل مرحلة -->
+<div class="modal fade" id="editStageModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-edit me-2"></i>تعديل المرحلة
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" id="editStageForm">
+                <input type="hidden" name="stage_id" id="edit_stage_id">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم المرحلة *</label>
+                                <input type="text" name="name" id="edit_name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">ترتيب المرحلة</label>
+                                <input type="number" name="sort_order" id="edit_sort_order" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الوصف</label>
+                        <textarea name="description" id="edit_description" class="form-control" rows="3"></textarea>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="is_paid" id="edit_is_paid">
+                                    <label class="form-check-label" for="edit_is_paid">
+                                        مرحلة مدفوعة الأجر
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label class="form-label">التكلفة لكل وحدة</label>
+                                <input type="number" name="cost_per_unit" id="edit_cost_per_unit" class="form-control" step="0.01">
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="mb-3">
+                                <label class="form-label">الوقت المقدر (دقيقة)</label>
+                                <input type="number" name="estimated_time_minutes" id="edit_estimated_time_minutes" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="edit_stage" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>حفظ التغييرات
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تأكيد الحذف -->
+<div class="modal fade" id="deleteStageModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>تأكيد الحذف
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>هل أنت متأكد من حذف المرحلة: <strong id="delete_stage_name"></strong>؟</p>
+                <p class="text-muted">لا يمكن التراجع عن هذا الإجراء.</p>
+            </div>
+            <div class="modal-footer">
+                <form method="POST" id="deleteStageForm">
+                    <input type="hidden" name="stage_id" id="delete_stage_id">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="delete_stage" class="btn btn-danger">
+                        <i class="fas fa-trash me-2"></i>حذف
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function editStage(stage) {
+    document.getElementById('edit_stage_id').value = stage.id;
+    document.getElementById('edit_name').value = stage.name;
+    document.getElementById('edit_description').value = stage.description || '';
+    document.getElementById('edit_sort_order').value = stage.sort_order;
+    document.getElementById('edit_cost_per_unit').value = stage.cost_per_unit;
+    document.getElementById('edit_estimated_time_minutes').value = stage.estimated_time_minutes;
+    document.getElementById('edit_is_paid').checked = stage.is_paid == 1;
+    
+    new bootstrap.Modal(document.getElementById('editStageModal')).show();
+}
+
+function deleteStage(id, name) {
+    document.getElementById('delete_stage_id').value = id;
+    document.getElementById('delete_stage_name').textContent = name;
+    
+    new bootstrap.Modal(document.getElementById('deleteStageModal')).show();
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>

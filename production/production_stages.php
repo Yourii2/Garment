@@ -1,0 +1,710 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'إدارة مراحل التصنيع';
+
+// معالجة توزيع المهام
+if (isset($_POST['assign_task'])) {
+    if (!validateCSRF($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error_message'] = 'رمز الأمان غير صحيح';
+        header('Location: production_stages.php');
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        $cutting_order_id = $_POST['cutting_order_id'];
+        $worker_id = $_POST['worker_id'];
+        $stage_id = $_POST['stage_id'];
+        $quantity = intval($_POST['quantity']);
+        $is_paid = isset($_POST['is_paid']) ? 1 : 0;
+        $cost_per_unit = $is_paid ? floatval($_POST['cost_per_unit']) : 0;
+        $notes = $_POST['notes'] ?? '';
+        
+        // التحقق من الكمية المتاحة
+        $stmt = $pdo->prepare("
+            SELECT 
+                co.quantity_ordered,
+                COALESCE(SUM(wa.quantity_assigned), 0) as total_assigned
+            FROM cutting_orders co
+            LEFT JOIN worker_assignments wa ON co.id = wa.cutting_order_id
+            WHERE co.id = ?
+            GROUP BY co.id
+        ");
+        $stmt->execute([$cutting_order_id]);
+        $order_data = $stmt->fetch();
+        
+        $available_quantity = $order_data['quantity_ordered'] - $order_data['total_assigned'];
+        
+        if ($quantity > $available_quantity) {
+            throw new Exception("الكمية المطلوبة أكبر من المتاحة");
+        }
+        
+        // إدراج المهمة
+        $stmt = $pdo->prepare("
+            INSERT INTO worker_assignments 
+            (cutting_order_id, worker_id, stage_id, quantity_assigned, assigned_date, status, notes, is_paid, cost_per_unit) 
+            VALUES (?, ?, ?, ?, NOW(), 'assigned', ?, ?, ?)
+        ");
+        $stmt->execute([$cutting_order_id, $worker_id, $stage_id, $quantity, $notes, $is_paid, $cost_per_unit]);
+        
+        // تحديث رصيد العامل إذا كانت المرحلة مدفوعة
+        if ($is_paid && $cost_per_unit > 0) {
+            $total_amount = $quantity * $cost_per_unit;
+            $stmt = $pdo->prepare("
+                UPDATE workers 
+                SET pending_balance = COALESCE(pending_balance, 0) + ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$total_amount, $worker_id]);
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم توزيع {$quantity} قطعة بنجاح";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_stages.php');
+    exit;
+}
+
+// معالجة بدء مرحلة إنتاج جديدة
+if (isset($_POST['start_production_stage'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $cutting_order_id = $_POST['cutting_order_id'];
+        $worker_id = $_POST['worker_id'];
+        $stage_id = $_POST['stage_id'];
+        $quantity = intval($_POST['quantity']);
+        $is_paid = isset($_POST['is_paid']) ? 1 : 0;
+        $cost_per_unit = $is_paid ? floatval($_POST['cost_per_unit']) : 0;
+        $notes = $_POST['notes'] ?? '';
+        
+        // التحقق من الكمية المتاحة
+        $stmt = $pdo->prepare("
+            SELECT 
+                co.quantity_ordered,
+                COALESCE(SUM(wa.quantity_assigned), 0) as total_assigned
+            FROM cutting_orders co
+            LEFT JOIN production_stages ps ON co.id = ps.cutting_order_id
+            LEFT JOIN stage_worker_assignments wa ON ps.id = wa.production_stage_id
+            WHERE co.id = ?
+            GROUP BY co.id
+        ");
+        $stmt->execute([$cutting_order_id]);
+        $order_data = $stmt->fetch();
+        
+        if (!$order_data) {
+            throw new Exception("أمر القص غير موجود");
+        }
+        
+        $available_quantity = $order_data['quantity_ordered'] - $order_data['total_assigned'];
+        
+        if ($quantity > $available_quantity) {
+            throw new Exception("الكمية المطلوبة ({$quantity}) أكبر من المتاحة ({$available_quantity})");
+        }
+        
+        // البحث عن مرحلة إنتاج موجودة أو إنشاء جديدة
+        $stmt = $pdo->prepare("
+            SELECT id FROM production_stages 
+            WHERE cutting_order_id = ? AND stage_id = ? 
+            LIMIT 1
+        ");
+        $stmt->execute([$cutting_order_id, $stage_id]);
+        $production_stage = $stmt->fetch();
+        
+        if (!$production_stage) {
+            // إنشاء مرحلة إنتاج جديدة
+            $stmt = $pdo->prepare("
+                INSERT INTO production_stages 
+                (cutting_order_id, stage_id, stage_order, quantity_required, status) 
+                VALUES (?, ?, 1, ?, 'pending')
+            ");
+            $stmt->execute([$cutting_order_id, $stage_id, $quantity]);
+            $production_stage_id = $pdo->lastInsertId();
+        } else {
+            $production_stage_id = $production_stage['id'];
+        }
+        
+        // إنشاء تخصيص عامل
+        $stmt = $pdo->prepare("
+            INSERT INTO stage_worker_assignments 
+            (production_stage_id, worker_id, quantity_assigned, cost_per_unit, is_paid, notes, status, assigned_at) 
+            VALUES (?, ?, ?, ?, ?, ?, 'assigned', NOW())
+        ");
+        $stmt->execute([
+            $production_stage_id, 
+            $worker_id, 
+            $quantity, 
+            $cost_per_unit, 
+            $is_paid, 
+            $notes
+        ]);
+        
+        // تحديث حالة مرحلة الإنتاج
+        $stmt = $pdo->prepare("
+            UPDATE production_stages 
+            SET status = 'in_progress', quantity_assigned = quantity_assigned + ?
+            WHERE id = ?
+        ");
+        $stmt->execute([$quantity, $production_stage_id]);
+        
+        logActivity('start_production_stage', "بدء مرحلة إنتاج للعامل {$worker_id} - الكمية: {$quantity}");
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم بدء مرحلة الإنتاج بنجاح وتخصيص {$quantity} قطعة للعامل";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_stages.php');
+    exit;
+}
+
+// جلب البيانات المطلوبة للنماذج
+try {
+    // جلب أوامر القص المتاحة
+    $stmt = $pdo->query("
+        SELECT 
+            co.id,
+            co.cutting_number,
+            p.name as product_name,
+            co.quantity_ordered,
+            COALESCE(SUM(wa.quantity_assigned), 0) as total_assigned,
+            (co.quantity_ordered - COALESCE(SUM(wa.quantity_assigned), 0)) as available_quantity
+        FROM cutting_orders co
+        LEFT JOIN products p ON co.product_id = p.id
+        LEFT JOIN production_stages ps ON co.id = ps.cutting_order_id
+        LEFT JOIN stage_worker_assignments wa ON ps.id = wa.production_stage_id
+        WHERE co.status = 'active'
+        GROUP BY co.id
+        HAVING available_quantity > 0
+        ORDER BY co.cutting_date DESC
+    ");
+    $available_orders = $stmt->fetchAll();
+    
+    // جلب العمال
+    $stmt = $pdo->query("SELECT id, name FROM workers WHERE status = 'active' ORDER BY name");
+    $workers = $stmt->fetchAll();
+    
+    // جلب مراحل التصنيع
+    $stmt = $pdo->query("SELECT id, name, is_paid, cost_per_unit FROM manufacturing_stages ORDER BY sort_order, name");
+    $stages = $stmt->fetchAll();
+    
+} catch (Exception $e) {
+    $available_orders = [];
+    $workers = [];
+    $stages = [];
+    $_SESSION['error_message'] = 'خطأ في جلب البيانات: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <div class="col-md-9 col-lg-10">
+            <main class="main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-tasks me-2"></i>مراحل الإنتاج
+                    </h1>
+                    <div>
+                        <button type="button" class="btn btn-success me-2" data-bs-toggle="modal" data-bs-target="#startProductionModal">
+                            <i class="fas fa-play me-1"></i>بدء مرحلة إنتاج
+                        </button>
+                        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#assignTaskModal">
+                            <i class="fas fa-user-plus me-1"></i>تخصيص مهمة
+                        </button>
+                    </div>
+                </div>
+
+                <?php if (isset($_SESSION['success_message'])): ?>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <?= $_SESSION['success_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['success_message']); ?>
+                <?php endif; ?>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <!-- جدول أوامر القص -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-list me-2"></i>أوامر القص وحالة التصنيع</h5>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($cutting_orders)): ?>
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle me-1"></i>
+                                لا توجد أوامر قص نشطة حال
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>رقم الأمر</th>
+                                            <th>المنتج</th>
+                                            <th>الكمية الإجمالية</th>
+                                            <th>المتاحة</th>
+                                            <th>قيد العمل</th>
+                                            <th>المكتملة</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($cutting_orders as $order): ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($order['cutting_number']) ?></td>
+                                                <td>
+                                                    <strong><?= htmlspecialchars($order['product_name']) ?></strong><br>
+                                                    <small class="text-muted"><?= htmlspecialchars($order['product_code']) ?></small>
+                                                </td>
+                                                <td><span class="badge bg-primary"><?= $order['quantity_ordered'] ?></span></td>
+                                                <td><span class="badge bg-success"><?= $order['available'] ?></span></td>
+                                                <td><span class="badge bg-warning"><?= $order['in_progress'] ?></span></td>
+                                                <td><span class="badge bg-info"><?= $order['completed'] ?></span></td>
+                                                <td>
+                                                    <?php if ($order['available'] > 0): ?>
+                                                        <button class="btn btn-primary btn-sm" 
+                                                                onclick="assignTask(<?= $order['id'] ?>, <?= $order['available'] ?>, '<?= htmlspecialchars($order['product_name']) ?>')">
+                                                            <i class="fas fa-user-plus me-1"></i>توزيع
+                                                        </button>
+                                                    <?php endif; ?>
+                                                    <button class="btn btn-info btn-sm" 
+                                                            onclick="viewDetails(<?= $order['id'] ?>)">
+                                                        <i class="fas fa-eye me-1"></i>التفاصيل
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+</div>
+
+<!-- مودال توزيع المهام -->
+<div class="modal fade" id="assignTaskModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">توزيع مهمة تصنيع</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?= generateCSRF() ?>">
+                    <input type="hidden" name="cutting_order_id" id="assign_cutting_order_id">
+                    
+                    <div id="assign-order-info" class="alert alert-info mb-3">
+                        معلومات الأمر...
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">العامل <span class="text-danger">*</span></label>
+                                <select name="worker_id" class="form-select" required>
+                                    <option value="">اختر العامل</option>
+                                    <?php foreach ($workers as $worker): ?>
+                                        <option value="<?= $worker['id'] ?>">
+                                            <?= htmlspecialchars($worker['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">مرحلة التصنيع <span class="text-danger">*</span></label>
+                                <select name="stage_id" class="form-select" required onchange="updateStageInfo()">
+                                    <option value="">اختر المرحلة</option>
+                                    <?php foreach ($stages as $stage): ?>
+                                        <option value="<?= $stage['id'] ?>" 
+                                                data-paid="<?= $stage['is_paid'] ?>" 
+                                                data-cost="<?= $stage['default_cost'] ?>">
+                                            <?= htmlspecialchars($stage['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الكمية <span class="text-danger">*</span></label>
+                                <input type="number" name="quantity" id="assign_quantity" class="form-control" min="1" required onchange="calculateTotal()">
+                                <div class="form-text" id="available-quantity-text">الكمية المتاحة: 0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">هل المرحلة مدفوعة الأجر؟</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="is_paid" id="is_paid" onchange="togglePayment()">
+                                    <label class="form-check-label" for="is_paid">
+                                        مرحلة مدفوعة الأجر
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="payment-section" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">أجر القطعة (ج.م) <span class="text-danger">*</span></label>
+                                    <input type="number" name="cost_per_unit" id="cost_per_unit" class="form-control" step="0.01" min="0" onchange="calculateTotal()">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">إجمالي الأجر المستحق</label>
+                                    <input type="text" id="total_amount" class="form-control" readonly>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="3" placeholder="أي ملاحظات حول المهمة..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="assign_task" class="btn btn-primary">
+                        <i class="fas fa-user-plus me-1"></i>توزيع المهمة
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- مودال بدء مرحلة إنتاج -->
+<div class="modal fade" id="startProductionModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">بدء مرحلة إنتاج جديدة</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?= generateCSRF() ?>">
+                    
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        اختر أمر القص والعامل ومرحلة التصنيع لبدء العمل
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">أمر القص <span class="text-danger">*</span></label>
+                                <select name="cutting_order_id" class="form-select" required onchange="updateAvailableQuantityStart()">
+                                    <option value="">اختر أمر القص</option>
+                                    <?php foreach ($available_orders as $order): ?>
+                                        <option value="<?= $order['id'] ?>" data-available="<?= $order['available_quantity'] ?>" data-product="<?= htmlspecialchars($order['product_name']) ?>">
+                                            <?= htmlspecialchars($order['cutting_number']) ?> - <?= htmlspecialchars($order['product_name']) ?>
+                                            (متاح: <?= $order['available_quantity'] ?> قطعة)
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">العامل <span class="text-danger">*</span></label>
+                                <select name="worker_id" class="form-select" required>
+                                    <option value="">اختر العامل</option>
+                                    <?php foreach ($workers as $worker): ?>
+                                        <option value="<?= $worker['id'] ?>">
+                                            <?= htmlspecialchars($worker['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">مرحلة التصنيع <span class="text-danger">*</span></label>
+                                <select name="stage_id" class="form-select" required onchange="updateStageInfoStart()">
+                                    <option value="">اختر المرحلة</option>
+                                    <?php foreach ($stages as $stage): ?>
+                                        <option value="<?= $stage['id'] ?>" 
+                                                data-paid="<?= $stage['is_paid'] ?>" 
+                                                data-cost="<?= $stage['cost_per_unit'] ?>">
+                                            <?= htmlspecialchars($stage['name']) ?>
+                                            <?php if ($stage['is_paid']): ?>
+                                                (مدفوعة - <?= $stage['cost_per_unit'] ?> ج.م/قطعة)
+                                            <?php endif; ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الكمية <span class="text-danger">*</span></label>
+                                <input type="number" name="quantity" id="start_quantity" class="form-control" min="1" required onchange="calculateTotalStart()">
+                                <div class="form-text" id="available-quantity-start">اختر أمر القص أولاً</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">هل المرحلة مدفوعة الأجر؟</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="is_paid" id="is_paid_start" onchange="togglePaymentStart()">
+                                    <label class="form-check-label" for="is_paid_start">
+                                        مرحلة مدفوعة الأجر
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3" id="cost_section_start" style="display: none;">
+                                <label class="form-label">التكلفة لكل قطعة (ج.م) <span class="text-danger">*</span></label>
+                                <input type="number" name="cost_per_unit" id="cost_per_unit_start" class="form-control" step="0.01" min="0" onchange="calculateTotalStart()">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="3" placeholder="أي ملاحظات إضافية..."></textarea>
+                    </div>
+                    
+                    <div id="cost_summary_start" class="alert alert-success" style="display: none;">
+                        <h6><i class="fas fa-calculator me-1"></i>ملخص التكلفة:</h6>
+                        <div id="cost_details_start"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="start_production_stage" class="btn btn-success">
+                        <i class="fas fa-play me-1"></i>بدء مرحلة الإنتاج
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let maxQuantity = 0;
+
+function assignTask(orderId, availableQuantity, productName) {
+    maxQuantity = availableQuantity;
+    document.getElementById('assign_cutting_order_id').value = orderId;
+    document.getElementById('assign_quantity').max = availableQuantity;
+    document.getElementById('assign_quantity').value = availableQuantity;
+    
+    document.getElementById('assign-order-info').innerHTML = `
+        <h6><i class="fas fa-info-circle me-1"></i>معلومات الأمر</h6>
+        <strong>المنتج:</strong> ${productName}<br>
+        <strong>الكمية المتاحة:</strong> ${availableQuantity} قطعة
+    `;
+    
+    document.getElementById('available-quantity-text').innerHTML = `الكمية المتاحة: ${availableQuantity} قطعة`;
+    
+    new bootstrap.Modal(document.getElementById('assignTaskModal')).show();
+}
+
+function updateStageInfo() {
+    const stageSelect = document.querySelector('select[name="stage_id"]');
+    const isPaidCheckbox = document.getElementById('is_paid');
+    const costInput = document.getElementById('cost_per_unit');
+    
+    if (stageSelect.value) {
+        const option = stageSelect.options[stageSelect.selectedIndex];
+        const isPaid = option.dataset.paid === '1';
+        const defaultCost = parseFloat(option.dataset.cost) || 0;
+        
+        isPaidCheckbox.checked = isPaid;
+        costInput.value = defaultCost;
+        
+        togglePayment();
+        calculateTotal();
+    }
+}
+
+function togglePayment() {
+    const paymentSection = document.getElementById('payment-section');
+    const isPaid = document.getElementById('is_paid').checked;
+    
+    paymentSection.style.display = isPaid ? 'block' : 'none';
+    
+    if (isPaid) {
+        document.getElementById('cost_per_unit').required = true;
+    } else {
+        document.getElementById('cost_per_unit').required = false;
+        document.getElementById('total_amount').value = '';
+    }
+}
+
+function calculateTotal() {
+    const quantity = parseInt(document.getElementById('assign_quantity').value) || 0;
+    const costPerUnit = parseFloat(document.getElementById('cost_per_unit').value) || 0;
+    const isPaid = document.getElementById('is_paid').checked;
+    
+    if (isPaid && quantity > 0 && costPerUnit > 0) {
+        const total = quantity * costPerUnit;
+        document.getElementById('total_amount').value = total.toFixed(2) + ' ج.م';
+    } else {
+        document.getElementById('total_amount').value = '';
+    }
+}
+
+function viewDetails(orderId) {
+    // يمكن إضافة صفحة تفاصيل منفصلة
+    window.location.href = `production_details.php?order_id=${orderId}`;
+}
+
+function updateAvailableQuantityStart() {
+    const select = document.querySelector('select[name="cutting_order_id"]');
+    const selectedOption = select.options[select.selectedIndex];
+    const quantityInput = document.getElementById('start_quantity');
+    const availableText = document.getElementById('available-quantity-start');
+    
+    if (selectedOption.value) {
+        const available = selectedOption.dataset.available;
+        const product = selectedOption.dataset.product;
+        
+        quantityInput.max = available;
+        quantityInput.value = available;
+        availableText.innerHTML = `الكمية المتاحة: ${available} قطعة من ${product}`;
+        availableText.className = 'form-text text-success';
+    } else {
+        quantityInput.max = '';
+        quantityInput.value = '';
+        availableText.innerHTML = 'اختر أمر القص أولاً';
+        availableText.className = 'form-text text-muted';
+    }
+    
+    calculateTotalStart();
+}
+
+function updateStageInfoStart() {
+    const select = document.querySelector('select[name="stage_id"]');
+    const selectedOption = select.options[select.selectedIndex];
+    const isPaidCheckbox = document.getElementById('is_paid_start');
+    const costInput = document.getElementById('cost_per_unit_start');
+    
+    if (selectedOption.value) {
+        const isPaid = selectedOption.dataset.paid == '1';
+        const defaultCost = selectedOption.dataset.cost || '0';
+        
+        isPaidCheckbox.checked = isPaid;
+        costInput.value = isPaid ? defaultCost : '0';
+        
+        togglePaymentStart();
+    }
+    
+    calculateTotalStart();
+}
+
+function togglePaymentStart() {
+    const isPaidCheckbox = document.getElementById('is_paid_start');
+    const costSection = document.getElementById('cost_section_start');
+    const costInput = document.getElementById('cost_per_unit_start');
+    
+    if (isPaidCheckbox.checked) {
+        costSection.style.display = 'block';
+        costInput.required = true;
+    } else {
+        costSection.style.display = 'none';
+        costInput.required = false;
+        costInput.value = '0';
+    }
+    
+    calculateTotalStart();
+}
+
+function calculateTotalStart() {
+    const quantity = parseInt(document.getElementById('start_quantity').value) || 0;
+    const costPerUnit = parseFloat(document.getElementById('cost_per_unit_start').value) || 0;
+    const isPaid = document.getElementById('is_paid_start').checked;
+    const costSummary = document.getElementById('cost_summary_start');
+    const costDetails = document.getElementById('cost_details_start');
+    
+    if (quantity > 0 && isPaid && costPerUnit > 0) {
+        const totalCost = quantity * costPerUnit;
+        costDetails.innerHTML = `
+            <strong>الكمية:</strong> ${quantity} قطعة<br>
+            <strong>التكلفة لكل قطعة:</strong> ${costPerUnit} ج.م<br>
+            <strong>إجمالي التكلفة:</strong> ${totalCost.toFixed(2)} ج.م
+        `;
+        costSummary.style.display = 'block';
+    } else {
+        costSummary.style.display = 'none';
+    }
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

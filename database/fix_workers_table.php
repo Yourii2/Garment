@@ -1,0 +1,88 @@
+<?php
+require_once '../config/config.php';
+
+try {
+    echo "<h3>إصلاح جدول العمال</h3>";
+    
+    // إضافة عمود specialization إذا لم يكن موجود
+    $stmt = $pdo->query("SHOW COLUMNS FROM workers LIKE 'specialization'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE workers ADD COLUMN specialization VARCHAR(100) NULL AFTER salary_amount");
+        echo "✅ تم إضافة عمود specialization<br>";
+    } else {
+        echo "ℹ️ عمود specialization موجود<br>";
+    }
+    
+    // إضافة عمود description بعد specialization
+    $stmt = $pdo->query("SHOW COLUMNS FROM workers LIKE 'description'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE workers ADD COLUMN description TEXT NULL AFTER specialization");
+        echo "✅ تم إضافة عمود description<br>";
+    } else {
+        echo "ℹ️ عمود description موجود<br>";
+    }
+    
+    // إضافة عمود notes إذا لم يكن موجود
+    $stmt = $pdo->query("SHOW COLUMNS FROM customers LIKE 'notes'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE customers ADD COLUMN notes TEXT NULL AFTER customer_type");
+        echo "✅ تم إضافة عمود notes لجدول customers<br>";
+    } else {
+        echo "ℹ️ عمود notes موجود في جدول customers<br>";
+    }
+    
+    // إضافة عمود description لجدول customers
+    $stmt = $pdo->query("SHOW COLUMNS FROM customers LIKE 'description'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE customers ADD COLUMN description TEXT NULL AFTER notes");
+        echo "✅ تم إضافة عمود description لجدول customers<br>";
+    } else {
+        echo "ℹ️ عمود description موجود في جدول customers<br>";
+    }
+    
+    // إضافة عمود notes إذا لم يكن موجود
+    $stmt = $pdo->query("SHOW COLUMNS FROM suppliers LIKE 'notes'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE suppliers ADD COLUMN notes TEXT NULL AFTER current_balance");
+        echo "✅ تم إضافة عمود notes لجدول suppliers<br>";
+    } else {
+        echo "ℹ️ عمود notes موجود في جدول suppliers<br>";
+    }
+    
+    // إضافة عمود description لجدول suppliers
+    $stmt = $pdo->query("SHOW COLUMNS FROM suppliers LIKE 'description'");
+    if ($stmt->rowCount() == 0) {
+        $pdo->exec("ALTER TABLE suppliers ADD COLUMN description TEXT NULL AFTER notes");
+        echo "✅ تم إضافة عمود description لجدول suppliers<br>";
+    } else {
+        echo "ℹ️ عمود description موجود في جدول suppliers<br>";
+    }
+    
+    echo "<br><strong>✅ تم إصلاح جدول العمال بنجاح</strong>";
+    echo "<br><a href='../dashboard.php' class='btn btn-primary'>العودة للوحة التحكم</a>";
+    
+} catch (Exception $e) {
+    echo "❌ خطأ: " . $e->getMessage();
+    echo "<br>تفاصيل الخطأ: " . $e->getTraceAsString();
+}
+$page_title = 'Fix workers table';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    
+
+<?php include '../includes/footer.php'; ?>
+</body>
+</html>

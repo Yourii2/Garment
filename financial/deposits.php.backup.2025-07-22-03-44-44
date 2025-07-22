@@ -1,0 +1,183 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة إيداع جديد
+if (isset($_POST['add_deposit'])) {
+    try {
+        $treasury_id = $_POST['treasury_id'];
+        $amount = floatval($_POST['amount']);
+        $reason = $_POST['reason'];
+        $description = $_POST['description'] ?? '';
+        
+        if ($amount <= 0) {
+            throw new Exception('يجب أن يكون المبلغ أكبر من صفر');
+        }
+        
+        $pdo->beginTransaction();
+        
+        // إضافة للخزينة
+        $stmt = $pdo->prepare("UPDATE treasuries SET current_balance = current_balance + ? WHERE id = ?");
+        $stmt->execute([$amount, $treasury_id]);
+        
+        // تسجيل المعاملة
+        $stmt = $pdo->prepare("
+            INSERT INTO treasury_transactions 
+            (treasury_id, amount, type, description, user_id, created_at) 
+            VALUES (?, ?, 'income', ?, ?, NOW())
+        ");
+        $stmt->execute([$treasury_id, $amount, $reason . ' - ' . $description, $_SESSION['user_id']]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم تسجيل الإيداع بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: deposits.php');
+    exit;
+}
+
+// جلب الخزائن النشطة
+$stmt = $pdo->query("SELECT * FROM treasuries WHERE is_active = 1 ORDER BY name ASC");
+$treasuries = $stmt->fetchAll();
+
+// جلب الإيداعات
+$stmt = $pdo->query("
+    SELECT tt.*, t.name as treasury_name, u.full_name as user_name
+    FROM treasury_transactions tt
+    LEFT JOIN treasuries t ON tt.treasury_id = t.id
+    LEFT JOIN users u ON tt.user_id = u.id
+    WHERE tt.type = 'income' AND tt.description NOT LIKE 'رصيد افتتاحي%'
+    ORDER BY tt.created_at DESC
+    LIMIT 50
+");
+$deposits = $stmt->fetchAll();
+
+$page_title = 'إيداع في الخزينة';
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-plus-circle me-2"></i>إيداع في الخزينة
+                </h1>
+                <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addDepositModal">
+                    <i class="fas fa-plus me-1"></i>إضافة إيداع
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>التاريخ</th>
+                                    <th>الخزينة</th>
+                                    <th>المبلغ</th>
+                                    <th>السبب</th>
+                                    <th>المستخدم</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($deposits as $deposit): ?>
+                                    <tr>
+                                        <td><?= date('Y-m-d H:i', strtotime($deposit['created_at'])) ?></td>
+                                        <td><?= htmlspecialchars($deposit['treasury_name']) ?></td>
+                                        <td>
+                                            <span class="badge bg-success fs-6">
+                                                <?= number_format($deposit['amount'], 2) ?> ج.م
+                                            </span>
+                                        </td>
+                                        <td><?= htmlspecialchars($deposit['description']) ?></td>
+                                        <td><?= htmlspecialchars($deposit['user_name']) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة إيداع -->
+<div class="modal fade" id="addDepositModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة إيداع جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">الخزينة *</label>
+                        <select name="treasury_id" class="form-select" required>
+                            <option value="">اختر الخزينة</option>
+                            <?php foreach ($treasuries as $treasury): ?>
+                                <option value="<?= $treasury['id'] ?>">
+                                    <?= htmlspecialchars($treasury['name']) ?> 
+                                    (<?= number_format($treasury['current_balance'], 2) ?> ج.م)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">المبلغ *</label>
+                        <input type="number" name="amount" class="form-control" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">السبب *</label>
+                        <select name="reason" class="form-select" required>
+                            <option value="">اختر السبب</option>
+                            <option value="إيداع نقدي">إيداع نقدي</option>
+                            <option value="تحصيل من عميل">تحصيل من عميل</option>
+                            <option value="مبيعات نقدية">مبيعات نقدية</option>
+                            <option value="إيرادات أخرى">إيرادات أخرى</option>
+                            <option value="استرداد مصروف">استرداد مصروف</option>
+                            <option value="أخرى">أخرى</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">تفاصيل إضافية</label>
+                        <textarea name="description" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_deposit" class="btn btn-success">تسجيل الإيداع</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

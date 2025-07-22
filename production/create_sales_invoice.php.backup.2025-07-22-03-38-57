@@ -1,0 +1,372 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إنشاء فاتورة جديدة
+if (isset($_POST['create_invoice'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $invoice_date = $_POST['invoice_date'];
+        $notes = $_POST['notes'] ?? '';
+        $items = $_POST['items'] ?? [];
+        
+        if (empty($items)) {
+            throw new Exception('يجب إضافة عنصر واحد على الأقل للفاتورة');
+        }
+        
+        // توليد رقم الفاتورة
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM sales_invoices");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $invoice_number = 'INV' . date('Y') . date('m') . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        // حساب إجماليات الفاتورة
+        $total_quantity = 0;
+        $total_items = count($items);
+        
+        foreach ($items as $item) {
+            $total_quantity += intval($item['quantity']);
+        }
+        
+        // إدراج الفاتورة
+        $stmt = $pdo->prepare("
+            INSERT INTO sales_invoices 
+            (invoice_number, invoice_date, total_quantity, total_items, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$invoice_number, $invoice_date, $total_quantity, $total_items, $notes, $_SESSION['user_id']]);
+        $invoice_id = $pdo->lastInsertId();
+        
+        // إدراج عناصر الفاتورة
+        foreach ($items as $item) {
+            $cutting_order_id = $item['cutting_order_id'];
+            $quantity = intval($item['quantity']);
+            $quality_grade = $item['quality_grade'];
+            $item_notes = $item['notes'] ?? '';
+            
+            // التحقق من الكمية المتاحة
+            $stmt = $pdo->prepare("
+                SELECT co.*, p.name as product_name,
+                       COALESCE(SUM(swa.quantity_completed), 0) as total_completed,
+                       COALESCE(SUM(sii.quantity_sent), 0) as total_sent
+                FROM cutting_orders co
+                JOIN products p ON co.product_id = p.id
+                LEFT JOIN production_stages ps ON co.id = ps.cutting_order_id
+                LEFT JOIN stage_worker_assignments swa ON ps.id = swa.production_stage_id
+                LEFT JOIN sales_invoice_items sii ON co.id = sii.cutting_order_id
+                WHERE co.id = ?
+                GROUP BY co.id
+            ");
+            $stmt->execute([$cutting_order_id]);
+            $order = $stmt->fetch();
+            
+            if (!$order) {
+                throw new Exception("أمر القص غير موجود");
+            }
+            
+            $available_quantity = $order['total_completed'] - $order['total_sent'];
+            
+            if ($quantity > $available_quantity) {
+                throw new Exception("الكمية المطلوبة للمنتج {$order['product_name']} أكبر من المتاحة");
+            }
+            
+            // إدراج عنصر الفاتورة
+            $stmt = $pdo->prepare("
+                INSERT INTO sales_invoice_items 
+                (invoice_id, cutting_order_id, product_id, quantity_sent, quality_grade, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([$invoice_id, $cutting_order_id, $order['product_id'], $quantity, $quality_grade, $item_notes]);
+        }
+        
+        // إرسال إشعارات لمستخدمي المخزن
+        $stmt = $pdo->query("SELECT id FROM users WHERE role IN ('admin', 'inventory_manager')");
+        $inventory_users = $stmt->fetchAll();
+        
+        foreach ($inventory_users as $user) {
+            $stmt = $pdo->prepare("
+                INSERT INTO notifications (user_id, type, title, message, reference_id, reference_type)
+                VALUES (?, 'sales_invoice', ?, ?, ?, 'sales_invoice')
+            ");
+            $stmt->execute([
+                $user['id'],
+                'فاتورة إرسال جديدة',
+                "تم إنشاء فاتورة إرسال جديدة رقم {$invoice_number} تحتوي على {$total_items} منتج بإجمالي {$total_quantity} قطعة",
+                $invoice_id
+            ]);
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم إنشاء فاتورة الإرسال رقم {$invoice_number} بنجاح";
+        header("Location: view_sales_invoice.php?id={$invoice_id}");
+        exit;
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+}
+
+// جلب أوامر القص المتاحة
+$stmt = $pdo->query("
+    SELECT co.*, p.name as product_name, p.code as product_code,
+           COALESCE(SUM(swa.quantity_completed), 0) as total_completed,
+           COALESCE(SUM(sii.quantity_sent), 0) as total_sent
+    FROM cutting_orders co
+    JOIN products p ON co.product_id = p.id
+    LEFT JOIN production_stages ps ON co.id = ps.cutting_order_id
+    LEFT JOIN stage_worker_assignments swa ON ps.id = swa.production_stage_id
+    LEFT JOIN sales_invoice_items sii ON co.id = sii.cutting_order_id
+    WHERE co.status = 'active'
+    GROUP BY co.id
+    HAVING (total_completed - total_sent) > 0
+    ORDER BY co.cutting_date DESC
+");
+$available_orders = $stmt->fetchAll();
+
+$page_title = 'إنشاء فاتورة إرسال للمبيعات';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="../../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include '../includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-5 pb-3 mb-4 border-bottom">
+                    <h1 class="h2">
+                        <i class="fas fa-file-invoice me-2"></i><?= $page_title ?>
+                    </h1>
+                </div>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <form method="POST" id="invoiceForm">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-plus me-2"></i>بيانات الفاتورة
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">تاريخ الفاتورة *</label>
+                                        <input type="date" name="invoice_date" class="form-control" value="<?= date('Y-m-d') ?>" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">ملاحظات</label>
+                                        <textarea name="notes" class="form-control" rows="2" placeholder="ملاحظات عامة على الفاتورة..."></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-box me-2"></i>عناصر الفاتورة
+                            </h5>
+                            <button type="button" class="btn btn-success btn-sm" onclick="addInvoiceItem()">
+                                <i class="fas fa-plus me-1"></i>إضافة منتج
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div id="invoice-items">
+                                <!-- سيتم إضافة العناصر هنا -->
+                            </div>
+                            
+                            <div class="alert alert-info mt-3" id="no-items-message">
+                                <i class="fas fa-info-circle me-2"></i>
+                                لم يتم إضافة أي منتجات بعد. اضغط "إضافة منتج" لبدء إنشاء الفاتورة.
+                            </div>
+                            
+                            <div class="row mt-4" id="invoice-summary" style="display: none;">
+                                <div class="col-md-6 offset-md-6">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <h6>ملخص الفاتورة:</h6>
+                                            <div class="d-flex justify-content-between">
+                                                <span>عدد المنتجات:</span>
+                                                <span id="total-items">0</span>
+                                            </div>
+                                            <div class="d-flex justify-content-between">
+                                                <span>إجمالي الكمية:</span>
+                                                <span id="total-quantity">0</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-end mt-4 mb-4">
+                        <button type="button" class="btn btn-secondary me-2" onclick="window.history.back()">
+                            <i class="fas fa-times me-1"></i>إلغاء
+                        </button>
+                        <button type="submit" name="create_invoice" class="btn btn-primary" id="submit-btn" disabled>
+                            <i class="fas fa-save me-1"></i>إنشاء الفاتورة
+                        </button>
+                    </div>
+                </form>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // تأكد من تحميل Bootstrap بشكل صحيح
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('Bootstrap loaded:', typeof bootstrap !== 'undefined');
+        
+        // إعادة تهيئة جميع القوائم المنسدلة
+        if (typeof bootstrap !== 'undefined') {
+            var dropdownElementList = [].slice.call(document.querySelectorAll('.dropdown-toggle'));
+            var dropdownList = dropdownElementList.map(function (dropdownToggleEl) {
+                return new bootstrap.Dropdown(dropdownToggleEl);
+            });
+        }
+    });
+
+    let itemCounter = 0;
+    const availableOrders = <?= json_encode($available_orders) ?>;
+
+    function addInvoiceItem() {
+        itemCounter++;
+        const itemHtml = `
+            <div class="invoice-item border rounded p-3 mb-3" id="item-${itemCounter}">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="mb-0">منتج #${itemCounter}</h6>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="removeInvoiceItem(${itemCounter})">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+                
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label">أمر القص *</label>
+                            <select name="items[${itemCounter}][cutting_order_id]" class="form-select" required onchange="updateAvailableQuantity(${itemCounter})">
+                                <option value="">اختر أمر القص</option>
+                                ${availableOrders.map(order => `
+                                    <option value="${order.id}" data-available="${order.total_completed - order.total_sent}" data-product="${order.product_name}">
+                                        ${order.cutting_number} - ${order.product_name} (متاح: ${order.total_completed - order.total_sent})
+                                    </option>
+                                `).join('')}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="mb-3">
+                            <label class="form-label">الكمية *</label>
+                            <input type="number" name="items[${itemCounter}][quantity]" class="form-control" min="1" required onchange="updateSummary()">
+                            <div class="form-text" id="available-${itemCounter}">اختر أمر القص أولاً</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="mb-3">
+                            <label class="form-label">درجة الجودة *</label>
+                            <select name="items[${itemCounter}][quality_grade]" class="form-select" required>
+                                <option value="A">A - ممتاز</option>
+                                <option value="B">B - جيد</option>
+                                <option value="C">C - مقبول</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label">ملاحظات</label>
+                    <textarea name="items[${itemCounter}][notes]" class="form-control" rows="2" placeholder="ملاحظات خاصة بهذا المنتج..."></textarea>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('invoice-items').insertAdjacentHTML('beforeend', itemHtml);
+        document.getElementById('no-items-message').style.display = 'none';
+        document.getElementById('invoice-summary').style.display = 'block';
+        updateSummary();
+    }
+
+    function removeInvoiceItem(itemId) {
+        document.getElementById(`item-${itemId}`).remove();
+        updateSummary();
+        
+        if (document.querySelectorAll('.invoice-item').length === 0) {
+            document.getElementById('no-items-message').style.display = 'block';
+            document.getElementById('invoice-summary').style.display = 'none';
+            document.getElementById('submit-btn').disabled = true;
+        }
+    }
+
+    function updateAvailableQuantity(itemId) {
+        const select = document.querySelector(`select[name="items[${itemId}][cutting_order_id]"]`);
+        const quantityInput = document.querySelector(`input[name="items[${itemId}][quantity]"]`);
+        const availableDiv = document.getElementById(`available-${itemId}`);
+        
+        if (select.value) {
+            const available = select.options[select.selectedIndex].dataset.available;
+            quantityInput.max = available;
+            quantityInput.value = available;
+            availableDiv.innerHTML = `الكمية المتاحة: ${available} قطعة`;
+            availableDiv.className = 'form-text text-success';
+        } else {
+            quantityInput.max = '';
+            quantityInput.value = '';
+            availableDiv.innerHTML = 'اختر أمر القص أولاً';
+            availableDiv.className = 'form-text text-muted';
+        }
+        
+        updateSummary();
+    }
+
+    function updateSummary() {
+        const items = document.querySelectorAll('.invoice-item');
+        let totalItems = items.length;
+        let totalQuantity = 0;
+        
+        items.forEach(item => {
+            const quantityInput = item.querySelector('input[type="number"]');
+            if (quantityInput.value) {
+                totalQuantity += parseInt(quantityInput.value);
+            }
+        });
+        
+        document.getElementById('total-items').textContent = totalItems;
+        document.getElementById('total-quantity').textContent = totalQuantity;
+        
+        // تفعيل/تعطيل زر الإرسال
+        document.getElementById('submit-btn').disabled = totalItems === 0;
+    }
+
+    // إضافة عنصر واحد افتراض
+    </script>
+</body>
+</html>
+
+
+

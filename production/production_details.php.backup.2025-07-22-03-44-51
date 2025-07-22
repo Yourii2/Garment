@@ -1,0 +1,728 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$order_id = intval($_GET['order_id'] ?? 0);
+if (!$order_id) {
+    $_SESSION['error_message'] = 'معرف الأمر غير صحيح';
+    header('Location: production_stages.php');
+    exit;
+}
+
+// معالجة بدء العمل
+if (isset($_POST['start_work'])) {
+    try {
+        $assignment_id = $_POST['assignment_id'];
+        
+        $stmt = $pdo->prepare("
+            UPDATE worker_assignments 
+            SET status = 'in_progress', started_at = NOW() 
+            WHERE id = ? AND status = 'assigned'
+        ");
+        $stmt->execute([$assignment_id]);
+        
+        $_SESSION['success_message'] = 'تم بدء العمل بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_details.php?order_id=' . $order_id);
+    exit;
+}
+
+// معالجة إنهاء العمل
+if (isset($_POST['complete_work'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $assignment_id = $_POST['assignment_id'];
+        $quantity_completed = intval($_POST['quantity_completed']);
+        $quantity_defective = intval($_POST['quantity_defective'] ?? 0);
+        $notes = $_POST['completion_notes'] ?? '';
+        
+        // جلب معلومات المهمة
+        $stmt = $pdo->prepare("SELECT * FROM worker_assignments WHERE id = ?");
+        $stmt->execute([$assignment_id]);
+        $assignment = $stmt->fetch();
+        
+        if ($quantity_completed + $quantity_defective > $assignment['quantity_assigned']) {
+            throw new Exception('إجمالي الكمية المكتملة والمعيبة أكبر من المطلوبة');
+        }
+        
+        // تحديث المهمة
+        $stmt = $pdo->prepare("
+            UPDATE worker_assignments 
+            SET quantity_completed = ?, quantity_defective = ?, 
+                status = 'completed', completed_at = NOW(), 
+                completion_notes = ?
+            WHERE id = ?
+        ");
+        $stmt->execute([$quantity_completed, $quantity_defective, $notes, $assignment_id]);
+        
+        // تحديث رصيد العامل إذا كانت المرحلة مدفوعة
+        if ($assignment['is_paid'] && $assignment['cost_per_unit'] > 0) {
+            $earned_amount = $quantity_completed * $assignment['cost_per_unit'];
+            $stmt = $pdo->prepare("
+                UPDATE workers 
+                SET earned_balance = COALESCE(earned_balance, 0) + ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$earned_amount, $assignment['worker_id']]);
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم إنهاء العمل وتسجيل {$quantity_completed} قطعة مكتملة";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_details.php?order_id=' . $order_id);
+    exit;
+}
+
+// معالجة نقل المهمة
+if (isset($_POST['transfer_task'])) {
+    if (!validateCSRF($_POST['csrf_token'] ?? '')) {
+        $_SESSION['error_message'] = 'رمز الأمان غير صحيح';
+        header('Location: production_details.php?order_id=' . $order_id);
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        $assignment_id = $_POST['transfer_assignment_id'];
+        $new_worker_id = $_POST['new_worker_id'];
+        $new_stage_id = $_POST['new_stage_id'];
+        $transfer_quantity = intval($_POST['transfer_quantity']);
+        $is_paid = isset($_POST['transfer_is_paid']) ? 1 : 0;
+        $cost_per_unit = $is_paid ? floatval($_POST['transfer_cost_per_unit']) : 0;
+        $notes = $_POST['transfer_notes'] ?? '';
+        
+        // جلب معلومات المهمة الحالية
+        $stmt = $pdo->prepare("
+            SELECT * FROM worker_assignments 
+            WHERE id = ? AND status = 'completed'
+        ");
+        $stmt->execute([$assignment_id]);
+        $current_assignment = $stmt->fetch();
+        
+        if (!$current_assignment) {
+            throw new Exception("المهمة غير موجودة أو غير مكتملة");
+        }
+        
+        $available_for_transfer = $current_assignment['quantity_completed'] - ($current_assignment['quantity_transferred'] ?? 0);
+        
+        if ($transfer_quantity > $available_for_transfer) {
+            throw new Exception("الكمية المطلوب نقلها أكبر من المتاحة");
+        }
+        
+        // إنشاء مهمة جديدة للعامل الجديد
+        $stmt = $pdo->prepare("
+            INSERT INTO worker_assignments 
+            (cutting_order_id, worker_id, stage_id, quantity_assigned, assigned_date, status, notes, is_paid, cost_per_unit, parent_assignment_id) 
+            VALUES (?, ?, ?, ?, NOW(), 'assigned', ?, ?, ?, ?)
+        ");
+        $stmt->execute([
+            $current_assignment['cutting_order_id'], 
+            $new_worker_id, 
+            $new_stage_id, 
+            $transfer_quantity, 
+            $notes,
+            $is_paid,
+            $cost_per_unit,
+            $assignment_id
+        ]);
+        
+        // تحديث الكمية المنقولة في المهمة الحالية
+        $stmt = $pdo->prepare("
+            UPDATE worker_assignments 
+            SET quantity_transferred = COALESCE(quantity_transferred, 0) + ?
+            WHERE id = ?
+        ");
+        $stmt->execute([$transfer_quantity, $assignment_id]);
+        
+        // تحديث رصيد العامل الجديد إذا كانت المرحلة مدفوعة
+        if ($is_paid && $cost_per_unit > 0) {
+            $total_amount = $transfer_quantity * $cost_per_unit;
+            $stmt = $pdo->prepare("
+                UPDATE workers 
+                SET pending_balance = COALESCE(pending_balance, 0) + ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$total_amount, $new_worker_id]);
+        }
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم نقل {$transfer_quantity} قطعة بنجاح للعامل الجديد";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: production_details.php?order_id=' . $order_id);
+    exit;
+}
+
+// جلب معلومات أمر القص
+$stmt = $pdo->prepare("
+    SELECT 
+        co.*,
+        p.name as product_name,
+        p.product_code,
+        p.description as product_description
+    FROM cutting_orders co
+    JOIN products p ON co.product_id = p.id
+    WHERE co.id = ?
+");
+$stmt->execute([$order_id]);
+$cutting_order = $stmt->fetch();
+
+if (!$cutting_order) {
+    $_SESSION['error_message'] = 'أمر القص غير موجود';
+    header('Location: production_stages.php');
+    exit;
+}
+
+// جلب المهام المخصصة
+$stmt = $pdo->prepare("
+    SELECT 
+        wa.*,
+        w.name as worker_name,
+        w.phone as worker_phone,
+        ms.name as stage_name,
+        ms.is_paid as stage_is_paid,
+        TIMESTAMPDIFF(MINUTE, wa.started_at, COALESCE(wa.completed_at, NOW())) as work_duration_minutes
+    FROM worker_assignments wa
+    JOIN workers w ON wa.worker_id = w.id
+    JOIN manufacturing_stages ms ON wa.stage_id = ms.id
+    WHERE wa.cutting_order_id = ?
+    ORDER BY wa.assigned_date DESC, wa.id DESC
+");
+$stmt->execute([$order_id]);
+$assignments = $stmt->fetchAll();
+
+// حساب الإحصائيات
+$total_assigned = 0;
+$total_in_progress = 0;
+$total_completed = 0;
+$total_defective = 0;
+
+foreach ($assignments as $assignment) {
+    $total_assigned += $assignment['quantity_assigned'];
+    if ($assignment['status'] == 'in_progress' || $assignment['status'] == 'assigned') {
+        $total_in_progress += $assignment['quantity_assigned'];
+    }
+    if ($assignment['status'] == 'completed') {
+        $total_completed += $assignment['quantity_completed'];
+        $total_defective += $assignment['quantity_defective'];
+    }
+}
+
+$available_quantity = $cutting_order['quantity_ordered'] - $total_assigned;
+
+// جلب العمال والمراحل للنقل
+$stmt = $pdo->query("SELECT id, name FROM workers WHERE status = 'active' ORDER BY name");
+$workers = $stmt->fetchAll();
+
+$stmt = $pdo->query("SELECT id, name, is_paid, default_cost FROM manufacturing_stages ORDER BY sort_order, name");
+$stages = $stmt->fetchAll();
+
+$page_title = 'تفاصيل أمر القص - ' . $cutting_order['cutting_number'];
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <div class="col-md-9 col-lg-10">
+            <main class="main-content">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h2><i class="fas fa-info-circle me-2"></i><?= $page_title ?></h2>
+                    <a href="production_stages.php" class="btn btn-secondary">
+                        <i class="fas fa-arrow-right me-1"></i>العودة
+                    </a>
+                </div>
+
+                <?php if (isset($_SESSION['success_message'])): ?>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <?= $_SESSION['success_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['success_message']); ?>
+                <?php endif; ?>
+
+                <?php if (isset($_SESSION['error_message'])): ?>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <?= $_SESSION['error_message'] ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    <?php unset($_SESSION['error_message']); ?>
+                <?php endif; ?>
+
+                <!-- معلومات أمر القص -->
+                <div class="row mb-4">
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5><i class="fas fa-clipboard me-2"></i>معلومات أمر القص</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <p><strong>رقم الأمر:</strong> <?= htmlspecialchars($cutting_order['cutting_number']) ?></p>
+                                        <p><strong>المنتج:</strong> <?= htmlspecialchars($cutting_order['product_name']) ?></p>
+                                        <p><strong>كود المنتج:</strong> <?= htmlspecialchars($cutting_order['product_code']) ?></p>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <p><strong>تاريخ الإنشاء:</strong> <?= date('Y-m-d H:i', strtotime($cutting_order['created_at'])) ?></p>
+                                        <p><strong>الحالة:</strong> 
+                                            <span class="badge bg-<?= $cutting_order['status'] == 'active' ? 'success' : 'secondary' ?>">
+                                                <?= $cutting_order['status'] == 'active' ? 'نشط' : 'غير نشط' ?>
+                                            </span>
+                                        </p>
+                                    </div>
+                                </div>
+                                <?php if ($cutting_order['notes']): ?>
+                                    <p><strong>ملاحظات:</strong> <?= htmlspecialchars($cutting_order['notes']) ?></p>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5><i class="fas fa-chart-pie me-2"></i>إحصائيات الكميات</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-2">
+                                    <span class="badge bg-primary me-2">الإجمالية</span>
+                                    <strong><?= $cutting_order['quantity_ordered'] ?></strong>
+                                </div>
+                                <div class="mb-2">
+                                    <span class="badge bg-success me-2">المتاحة</span>
+                                    <strong><?= $available_quantity ?></strong>
+                                </div>
+                                <div class="mb-2">
+                                    <span class="badge bg-warning me-2">قيد العمل</span>
+                                    <strong><?= $total_in_progress ?></strong>
+                                </div>
+                                <div class="mb-2">
+                                    <span class="badge bg-info me-2">المكتملة</span>
+                                    <strong><?= $total_completed ?></strong>
+                                </div>
+                                <?php if ($total_defective > 0): ?>
+                                    <div class="mb-2">
+                                        <span class="badge bg-danger me-2">المعيبة</span>
+                                        <strong><?= $total_defective ?></strong>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- جدول المهام -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-tasks me-2"></i>المهام المخصصة</h5>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($assignments)): ?>
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle me-1"></i>
+                                لم يتم توزيع أي مهام بعد
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>العامل</th>
+                                            <th>المرحلة</th>
+                                            <th>الكمية المطلوبة</th>
+                                            <th>المكتملة</th>
+                                            <th>المعيبة</th>
+                                            <th>الحالة</th>
+                                            <th>مدة العمل</th>
+                                            <th>الأجر</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($assignments as $assignment): ?>
+                                            <tr>
+                                                <td>
+                                                    <strong><?= htmlspecialchars($assignment['worker_name']) ?></strong><br>
+                                                    <small class="text-muted"><?= htmlspecialchars($assignment['worker_phone']) ?></small>
+                                                </td>
+                                                <td>
+                                                    <?= htmlspecialchars($assignment['stage_name']) ?>
+                                                    <?php if ($assignment['is_paid']): ?>
+                                                        <br><small class="text-success"><i class="fas fa-money-bill-wave"></i> مدفوعة</small>
+                                                    <?php else: ?>
+                                                        <br><small class="text-muted"><i class="fas fa-times"></i> غير مدفوعة</small>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td><span class="badge bg-primary"><?= $assignment['quantity_assigned'] ?></span></td>
+                                                <td><span class="badge bg-success"><?= $assignment['quantity_completed'] ?? 0 ?></span></td>
+                                                <td><span class="badge bg-danger"><?= $assignment['quantity_defective'] ?? 0 ?></span></td>
+                                                <td>
+                                                    <?php
+                                                    $status_class = [
+                                                        'assigned' => 'bg-secondary',
+                                                        'in_progress' => 'bg-warning',
+                                                        'completed' => 'bg-success'
+                                                    ];
+                                                    $status_text = [
+                                                        'assigned' => 'مخصصة',
+                                                        'in_progress' => 'قيد العمل',
+                                                        'completed' => 'مكتملة'
+                                                    ];
+                                                    ?>
+                                                    <span class="badge <?= $status_class[$assignment['status']] ?? 'bg-secondary' ?>">
+                                                        <?= $status_text[$assignment['status']] ?? $assignment['status'] ?>
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <?php if ($assignment['started_at']): ?>
+                                                        <?php
+                                                        $duration = $assignment['work_duration_minutes'];
+                                                        $hours = floor($duration / 60);
+                                                        $minutes = $duration % 60;
+                                                        ?>
+                                                        <?= $hours ?>س <?= $minutes ?>د
+                                                    <?php else: ?>
+                                                        <span class="text-muted">لم يبدأ</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td>
+                                                    <?php if ($assignment['is_paid'] && $assignment['cost_per_unit'] > 0): ?>
+                                                        <?= number_format($assignment['cost_per_unit'], 2) ?> ج.م/قطعة<br>
+                                                        <small class="text-success">
+                                                            إجمالي: <?= number_format(($assignment['quantity_completed'] ?? 0) * $assignment['cost_per_unit'], 2) ?> ج.م
+                                                        </small>
+                                                    <?php else: ?>
+                                                        <span class="text-muted">غير مدفوعة</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td>
+                                                    <div class="btn-group-vertical btn-group-sm">
+                                                        <?php if ($assignment['status'] == 'assigned'): ?>
+                                                            <button class="btn btn-success btn-sm" onclick="startWork(<?= $assignment['id'] ?>)">
+                                                                <i class="fas fa-play me-1"></i>بدء العمل
+                                                            </button>
+                                                        <?php elseif ($assignment['status'] == 'in_progress'): ?>
+                                                            <button class="btn btn-primary btn-sm" onclick="completeWork(<?= $assignment['id'] ?>, <?= $assignment['quantity_assigned'] ?>)">
+                                                                <i class="fas fa-check me-1"></i>إنهاء العمل
+                                                            </button>
+                                                        <?php elseif ($assignment['status'] == 'completed'): ?>
+                                                            <?php 
+                                                            $available_for_transfer = $assignment['quantity_completed'] - ($assignment['quantity_transferred'] ?? 0);
+                                                            if ($available_for_transfer > 0): 
+                                                            ?>
+                                                                <button class="btn btn-info btn-sm" onclick="transferTask(<?= $assignment['id'] ?>, <?= $available_for_transfer ?>)">
+                                                                    <i class="fas fa-exchange-alt me-1"></i>نقل (<?= $available_for_transfer ?>)
+                                                                </button>
+                                                            <?php endif; ?>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+</div>
+
+<!-- مودال بدء العمل -->
+<div class="modal fade" id="startWorkModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تأكيد بدء العمل</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="assignment_id" id="start_assignment_id">
+                    <p>هل أنت متأكد من بدء العمل في هذه المهمة؟</p>
+                    <p class="text-muted">سيتم تسجيل وقت البدء تلقائ</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="start_work" class="btn btn-success">
+                        <i class="fas fa-play me-1"></i>بدء العمل
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- مودال إنهاء العمل -->
+<div class="modal fade" id="completeWorkModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إنهاء العمل</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="assignment_id" id="complete_assignment_id">
+                    
+                    <div class="mb-3">
+                        <label class="form-label">الكمية المكتملة <span class="text-danger">*</span></label>
+                        <input type="number" name="quantity_completed" id="quantity_completed" class="form-control" min="0" required>
+                        <div class="form-text" id="max-quantity-text">الحد الأقصى: 0</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">الكمية المعيبة</label>
+                        <input type="number" name="quantity_defective" id="quantity_defective" class="form-control" min="0" value="0">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات الإنهاء</label>
+                        <textarea name="completion_notes" class="form-control" rows="3" placeholder="أي ملاحظات حول جودة العمل أو المشاكل..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="complete_work" class="btn btn-primary">
+                        <i class="fas fa-check me-1"></i>إنهاء العمل
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- مودال نقل المهمة -->
+<div class="modal fade" id="transferTaskModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">نقل المهمة لعامل آخر</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?= generateCSRF() ?>">
+                    <input type="hidden" name="transfer_assignment_id" id="transfer_assignment_id">
+                    
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-1"></i>
+                        سيتم إنشاء مهمة جديدة للعامل المختار في المرحلة المحددة
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">العامل الجديد <span class="text-danger">*</span></label>
+                                <select name="new_worker_id" class="form-select" required>
+                                    <option value="">اختر العامل</option>
+                                    <?php foreach ($workers as $worker): ?>
+                                        <option value="<?= $worker['id'] ?>">
+                                            <?= htmlspecialchars($worker['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">المرحلة الجديدة <span class="text-danger">*</span></label>
+                                <select name="new_stage_id" class="form-select" required onchange="updateTransferStageInfo()">
+                                    <option value="">اختر المرحلة</option>
+                                    <?php foreach ($stages as $stage): ?>
+                                        <option value="<?= $stage['id'] ?>" 
+                                                data-paid="<?= $stage['is_paid'] ?>" 
+                                                data-cost="<?= $stage['default_cost'] ?>">
+                                            <?= htmlspecialchars($stage['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">الكمية المراد نقلها <span class="text-danger">*</span></label>
+                                <input type="number" name="transfer_quantity" id="transfer_quantity" class="form-control" min="1" required onchange="calculateTransferTotal()">
+                                <div class="form-text" id="transfer-available-text">المتاحة للنقل: 0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">هل المرحلة الجديدة مدفوعة؟</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="transfer_is_paid" id="transfer_is_paid" onchange="toggleTransferPayment()">
+                                    <label class="form-check-label" for="transfer_is_paid">
+                                        مرحلة مدفوعة الأجر
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="transfer-payment-section" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">أجر القطعة (ج.م) <span class="text-danger">*</span></label>
+                                    <input type="number" name="transfer_cost_per_unit" id="transfer_cost_per_unit" class="form-control" step="0.01" min="0" onchange="calculateTransferTotal()">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">إجمالي الأجر المستحق</label>
+                                    <input type="text" id="transfer_total_amount" class="form-control" readonly>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات النقل</label>
+                        <textarea name="transfer_notes" class="form-control" rows="3" placeholder="سبب النقل أو أي ملاحظات..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="transfer_task" class="btn btn-info">
+                        <i class="fas fa-exchange-alt me-1"></i>نقل المهمة
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let maxTransferQuantity = 0;
+
+function startWork(assignmentId) {
+    document.getElementById('start_assignment_id').value = assignmentId;
+    new bootstrap.Modal(document.getElementById('startWorkModal')).show();
+}
+
+function completeWork(assignmentId, maxQuantity) {
+    document.getElementById('complete_assignment_id').value = assignmentId;
+    document.getElementById('quantity_completed').max = maxQuantity;
+    document.getElementById('quantity_completed').value = maxQuantity;
+    document.getElementById('max-quantity-text').innerHTML = `الحد الأقصى: ${maxQuantity} قطعة`;
+    
+    new bootstrap.Modal(document.getElementById('completeWorkModal')).show();
+}
+
+function transferTask(assignmentId, availableQuantity) {
+    maxTransferQuantity = availableQuantity;
+    document.getElementById('transfer_assignment_id').value = assignmentId;
+    document.getElementById('transfer_quantity').max = availableQuantity;
+    document.getElementById('transfer_quantity').value = availableQuantity;
+    document.getElementById('transfer-available-text').innerHTML = `المتاحة للنقل: ${availableQuantity} قطعة`;
+    
+    new bootstrap.Modal(document.getElementById('transferTaskModal')).show();
+}
+
+function updateTransferStageInfo() {
+    const stageSelect = document.querySelector('select[name="new_stage_id"]');
+    const isPaidCheckbox = document.getElementById('transfer_is_paid');
+    const costInput = document.getElementById('transfer_cost_per_unit');
+    
+    if (stageSelect.value) {
+        const option = stageSelect.options[stageSelect.selectedIndex];
+        const isPaid = option.dataset.paid === '1';
+        const defaultCost = parseFloat(option.dataset.cost) || 0;
+        
+        isPaidCheckbox.checked = isPaid;
+        costInput.value = defaultCost;
+        
+        toggleTransferPayment();
+        calculateTransferTotal();
+    }
+}
+
+function toggleTransferPayment() {
+    const paymentSection = document.getElementById('transfer-payment-section');
+    const isPaid = document.getElementById('transfer_is_paid').checked;
+    
+    paymentSection.style.display = isPaid ? 'block' : 'none';
+    
+    if (isPaid) {
+        document.getElementById('transfer_cost_per_unit').required = true;
+    } else {
+        document.getElementById('transfer_cost_per_unit').required = false;
+        document.getElementById('transfer_total_amount').value = '';
+    }
+}
+
+function calculateTransferTotal() {
+    const quantity = parseInt(document.getElementById('transfer_quantity').value) || 0;
+    const costPerUnit = parseFloat(document.getElementById('transfer_cost_per_unit').value) || 0;
+    const isPaid = document.getElementById('transfer_is_paid').checked;
+    
+    if (isPaid && quantity > 0 && costPerUnit > 0) {
+        const total = quantity * costPerUnit;
+        document.getElementById('transfer_total_amount').value = total.toFixed(2) + ' ج.م';
+    } else {
+        document.getElementById('transfer_total_amount').value = '';
+    }
+}
+
+// التحقق من صحة الكميات
+document.getElementById('quantity_completed').addEventListener('input', function() {
+    const completed = parseInt(this.value) || 0;
+    const defective = parseInt(document.getElementById('quantity_defective').value) || 0;
+    const maxQuantity = parseInt(this.max);
+    
+    if (completed + defective > maxQuantity) {
+        document.getElementById('quantity_defective').value = Math.max(0, maxQuantity - completed);
+    }
+});
+
+document.getElementById('quantity_defective').addEventListener('input', function() {
+    const defective = parseInt(this.value) || 0;
+    const completed = parseInt(document.getElementById('quantity_completed').value) || 0;
+    const maxQuantity = parseInt(document.getElementById('quantity_completed').max);
+    
+    if (completed + defective > maxQuantity) {
+        document.getElementById('quantity_completed').value = Math.max(0, maxQuantity - defective);
+    }
+});
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>

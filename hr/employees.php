@@ -1,0 +1,599 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة موظف جديد
+if (isset($_POST['add_employee'])) {
+    try {
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $salary_type = $_POST['salary_type'];
+        $salary_amount = $_POST['salary_amount'] ?? 0;
+        
+        // توليد كود الموظف التلقائي
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM employees");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $employee_code = 'EMP' . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        $stmt = $pdo->prepare("INSERT INTO employees (employee_code, name, phone, address, salary_type, salary_amount) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$employee_code, $name, $phone, $address, $salary_type, $salary_amount]);
+        
+        $_SESSION['success_message'] = 'تم إضافة الموظف بنجاح بالكود: ' . $employee_code;
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: employees.php');
+    exit;
+}
+
+// معالجة تحديث موظف
+if (isset($_POST['update_employee'])) {
+    try {
+        $employee_id = $_POST['employee_id'];
+        $name = $_POST['name'];
+        $phone = $_POST['phone'] ?? '';
+        $address = $_POST['address'] ?? '';
+        $salary_type = $_POST['salary_type'];
+        $salary_amount = $_POST['salary_amount'] ?? 0;
+        
+        $stmt = $pdo->prepare("UPDATE employees SET name = ?, phone = ?, address = ?, salary_type = ?, salary_amount = ? WHERE id = ?");
+        $stmt->execute([$name, $phone, $address, $salary_type, $salary_amount, $employee_id]);
+        
+        $_SESSION['success_message'] = 'تم تحديث الموظف بنجاح';
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: employees.php');
+    exit;
+}
+
+// معالجة حذف موظف
+if (isset($_POST['delete_employee'])) {
+    try {
+        $employee_id = $_POST['employee_id'];
+        
+        // التحقق من وجود معاملات مالية مرتبطة
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM employee_transactions WHERE employee_id = ?");
+        $stmt->execute([$employee_id]);
+        $transactions_count = $stmt->fetchColumn();
+        
+        if ($transactions_count > 0) {
+            $_SESSION['error_message'] = 'لا يمكن حذف هذا الموظف لوجود معاملات مالية مرتبطة به';
+        } else {
+            $stmt = $pdo->prepare("DELETE FROM employees WHERE id = ?");
+            $result = $stmt->execute([$employee_id]);
+            
+            if ($result) {
+                $_SESSION['success_message'] = 'تم حذف الموظف بنجاح';
+            } else {
+                $_SESSION['error_message'] = 'فشل في حذف الموظف';
+            }
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: employees.php');
+    exit;
+}
+
+// جلب الموظفين (العمال المكتبيين فقط - بدون حسابات مستخدمين)
+$stmt = $pdo->query("
+    SELECT * FROM employees 
+    WHERE user_id IS NULL AND employee_code IS NOT NULL
+    ORDER BY id DESC
+");
+$employees = $stmt->fetchAll();
+
+$page_title = 'إدارة الموظفين';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-user-tie text-primary me-2"></i>
+                    إدارة الموظفين (العمال المكتبيين)
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addEmployeeModal">
+                    <i class="fas fa-plus me-2"></i>إضافة موظف جديد
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- جدول الموظفين -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>قائمة الموظفين
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>كود الموظف</th>
+                                    <th>الاسم</th>
+                                    <th>رقم الهاتف</th>
+                                    <th>العنوان</th>
+                                    <th>نوع الراتب</th>
+                                    <th>المبلغ</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($employees)): ?>
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا يوجد موظفين مسجلين
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($employees as $employee): ?>
+                                    <tr>
+                                      <!--   <td><span class="badge bg-primary"><?= htmlspecialchars($employee['employee_code']) ?></span></td> -->
+                                        <td><?= htmlspecialchars($employee['employee_code']) ?></td>
+                                        <td><?= htmlspecialchars($employee['name']) ?></td>
+                                        <td><?= htmlspecialchars($employee['phone']) ?></td>
+                                        <td><?= htmlspecialchars($employee['address']) ?></td>
+                                        <td>
+                                            <?php
+                                            $salary_types = [
+                                                'daily' => 'يومي',
+                                                'weekly' => 'أسبوعي', 
+                                                'monthly' => 'شهري'
+                                            ];
+                                            echo $salary_types[$employee['salary_type']] ?? $employee['salary_type'];
+                                            ?>
+                                        </td>
+                                        <td><?= number_format($employee['salary_amount'], 2) ?> ج.م</td>
+                                        <td>
+                                            <button class="btn btn-sm btn-info" onclick="viewEmployee(<?= $employee['id'] ?>)" title="عرض">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-warning" data-bs-toggle="modal" data-bs-target="#editEmployeeModal<?= $employee['id'] ?>" title="تعديل">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteEmployee(<?= $employee['id'] ?>, '<?= addslashes($employee['name']) ?>')" title="حذف">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal إضافة موظف -->
+            <div class="modal fade" id="addEmployeeModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">إضافة موظف جديد</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <form method="POST">
+                            <div class="modal-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">الاسم الكامل</label>
+                                            <input type="text" class="form-control" name="name" required>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">رقم الهاتف</label>
+                                            <input type="text" class="form-control" name="phone">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">العنوان</label>
+                                    <textarea class="form-control" name="address" rows="2"></textarea>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">نوع الراتب</label>
+                                            <select class="form-select" name="salary_type" required>
+                                                <option value="daily">يومي</option>
+                                                <option value="weekly">أسبوعي</option>
+                                                <option value="monthly">شهري</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">مبلغ الراتب</label>
+                                            <input type="number" step="0.01" class="form-control" name="salary_amount" value="0" required>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                                <button type="submit" name="add_employee" class="btn btn-primary">إضافة</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modals تعديل الموظفين -->
+            <?php foreach ($employees as $employee): ?>
+            <div class="modal fade" id="editEmployeeModal<?= $employee['id'] ?>" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">تعديل الموظف</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <form method="POST">
+                            <input type="hidden" name="employee_id" value="<?= $employee['id'] ?>">
+                            <div class="modal-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">الاسم الكامل</label>
+                                            <input type="text" class="form-control" name="name" value="<?= htmlspecialchars($employee['name']) ?>" required>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">رقم الهاتف</label>
+                                            <input type="text" class="form-control" name="phone" value="<?= htmlspecialchars($employee['phone']) ?>">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">العنوان</label>
+                                    <textarea class="form-control" name="address" rows="2"><?= htmlspecialchars($employee['address']) ?></textarea>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">نوع الراتب</label>
+                                            <select class="form-select" name="salary_type" required>
+                                                <option value="daily" <?= $employee['salary_type'] == 'daily' ? 'selected' : '' ?>>يومي</option>
+                                                <option value="weekly" <?= $employee['salary_type'] == 'weekly' ? 'selected' : '' ?>>أسبوعي</option>
+                                                <option value="monthly" <?= $employee['salary_type'] == 'monthly' ? 'selected' : '' ?>>شهري</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">مبلغ الراتب</label>
+                                            <input type="number" step="0.01" class="form-control" name="salary_amount" value="<?= $employee['salary_amount'] ?>" required>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                                <button type="submit" name="update_employee" class="btn btn-warning">تحديث</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <?php endforeach; ?>
+
+            <!-- Modal عرض معاملات الموظف -->
+            <div class="modal fade" id="viewEmployeeModal" tabindex="-1">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">معاملات الموظف: <span id="employeeName"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h6 class="mb-0">معلومات الموظف</h6>
+                                        </div>
+                                        <div class="card-body">
+                                            <div id="employeeDetails"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h6 class="mb-0">الملخص المالي</h6>
+                                        </div>
+                                        <div class="card-body">
+                                            <div id="employeeFinancial"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="row mt-3">
+                                <div class="col-12">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h6 class="mb-0">المعاملات المالية</h6>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="table-responsive">
+                                                <table class="table table-sm">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>التاريخ</th>
+                                                            <th>النوع</th>
+                                                            <th>المبلغ</th>
+                                                            <th>الوصف</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="employeeTransactions"></tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal إضافة معاملة مالية -->
+            <div class="modal fade" id="addTransactionModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">إضافة معاملة مالية</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <form id="addTransactionForm">
+                            <div class="modal-body">
+                                <input type="hidden" id="transaction_employee_id" name="employee_id">
+                                <div class="mb-3">
+                                    <label class="form-label">نوع المعاملة</label>
+                                    <select class="form-select" name="transaction_type" required>
+                                        <option value="salary">راتب</option>
+                                        <option value="bonus">حافز</option>
+                                        <option value="deduction">خصم</option>
+                                        <option value="advance">سلفة</option>
+                                        <option value="overtime">إضافي</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">المبلغ</label>
+                                    <input type="number" step="0.01" class="form-control" name="amount" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">التاريخ</label>
+                                    <input type="date" class="form-control" name="transaction_date" value="<?= date('Y-m-d') ?>" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">الوصف</label>
+                                    <textarea class="form-control" name="description" rows="2"></textarea>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                                <button type="submit" class="btn btn-primary">إضافة</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+
+
+
+
+
+
+
+
+
+
+<script>
+function viewEmployee(employeeId) {
+    fetch('get_employee_details.php?id=' + employeeId)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const employee = data.employee;
+                
+                document.getElementById('employeeName').textContent = employee.name;
+                
+                document.getElementById('employeeDetails').innerHTML = `
+                    <p><strong>كود الموظف:</strong> ${employee.employee_code}</p>
+                    <p><strong>الاسم:</strong> ${employee.name}</p>
+                    <p><strong>الهاتف:</strong> ${employee.phone || 'غير محدد'}</p>
+                    <p><strong>العنوان:</strong> ${employee.address || 'غير محدد'}</p>
+                    <p><strong>نوع الراتب:</strong> ${getSalaryTypeText(employee.salary_type)}</p>
+                    <p><strong>مبلغ الراتب:</strong> ${parseFloat(employee.salary_amount).toLocaleString()} ج.م</p>
+                `;
+                
+                document.getElementById('employeeFinancial').innerHTML = `
+                    <p><strong>إجمالي الرواتب:</strong> ${parseFloat(data.total_salaries || 0).toLocaleString()} ج.م</p>
+                    <p><strong>إجمالي الحوافز:</strong> ${parseFloat(data.total_bonuses || 0).toLocaleString()} ج.م</p>
+                    <p><strong>إجمالي الخصومات:</strong> ${parseFloat(data.total_deductions || 0).toLocaleString()} ج.م</p>
+                    <p><strong>إجمالي السلف:</strong> ${parseFloat(data.total_advances || 0).toLocaleString()} ج.م</p>
+                    <p><strong>صافي المستحقات:</strong> ${parseFloat(data.net_amount || 0).toLocaleString()} ج.م</p>
+                `;
+                
+                let transactionsHtml = '';
+                if (data.transactions && data.transactions.length > 0) {
+                    data.transactions.forEach(transaction => {
+                        transactionsHtml += `
+                            <tr>
+                                <td>${transaction.transaction_date}</td>
+                                <td>${getTransactionTypeText(transaction.transaction_type)}</td>
+                                <td>${parseFloat(transaction.amount).toLocaleString()} ج.م</td>
+                                <td>${transaction.description || ''}</td>
+                            </tr>
+                        `;
+                    });
+                } else {
+                    transactionsHtml = '<tr><td colspan="4" class="text-center">لا توجد معاملات</td></tr>';
+                }
+                document.getElementById('employeeTransactions').innerHTML = transactionsHtml;
+                
+                new bootstrap.Modal(document.getElementById('viewEmployeeModal')).show();
+            } else {
+                alert('خطأ: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('حدث خطأ في جلب البيانات');
+        });
+}
+
+function getTransactionTypeText(type) {
+    const types = {
+        'salary': 'راتب',
+        'bonus': 'حافز',
+        'deduction': 'خصم',
+        'advance': 'سلفة',
+        'overtime': 'إضافي'
+    };
+    return types[type] || type;
+}
+
+function getSalaryTypeText(type) {
+    const types = {
+        'daily': 'يومي',
+        'weekly': 'أسبوعي',
+        'monthly': 'شهري'
+    };
+    return types[type] || type;
+}
+
+function confirmDeleteEmployee(employeeId, employeeName) {
+    if (confirm('هل أنت متأكد من حذف الموظف: ' + employeeName + '؟\nسيتم حذف جميع البيانات المرتبطة به.')) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.innerHTML = `
+            <input type="hidden" name="delete_employee" value="1">
+            <input type="hidden" name="employee_id" value="${employeeId}">
+        `;
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function deleteTransaction(transactionId) {
+    if (confirm('هل أنت متأكد من حذف هذه المعاملة؟')) {
+        fetch('delete_employee_transaction.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({transaction_id: transactionId})
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('خطأ: ' + data.message);
+            }
+        });
+    }
+}
+
+// إضافة معاملة مالية
+document.getElementById('addTransactionForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    
+    fetch('add_employee_transaction.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('addTransactionModal')).hide();
+            viewEmployee(formData.get('employee_id'));
+            this.reset();
+        } else {
+            alert('خطأ: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('حدث خطأ في إضافة المعاملة');
+    });
+});
+</script>
+
+</body>
+</html>
+
+</body>
+</html>

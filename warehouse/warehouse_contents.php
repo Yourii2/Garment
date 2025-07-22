@@ -1,0 +1,485 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+if (!isset($_GET['id'])) {
+    header('Location: warehouses.php');
+    exit;
+}
+
+$warehouse_id = $_GET['id'];
+
+try {
+    // جلب بيانات المخزن
+    $stmt = $pdo->prepare("SELECT * FROM branches WHERE id = ? AND type = 'warehouse'");
+    $stmt->execute([$warehouse_id]);
+    $warehouse = $stmt->fetch();
+
+    if (!$warehouse) {
+        $_SESSION['error_message'] = 'المخزن غير موجود';
+        header('Location: warehouses.php');
+        exit;
+    }
+
+    // جلب الأقمشة
+    $stmt = $pdo->prepare("
+        SELECT ft.*, 
+               COALESCE(ft.current_quantity, 0) as current_quantity,
+               COALESCE(ft.min_quantity, 0) as min_quantity
+        FROM fabric_types ft
+        WHERE ft.branch_id = ?
+        ORDER BY ft.name
+    ");
+    $stmt->execute([$warehouse_id]);
+    $fabrics = $stmt->fetchAll();
+
+    // جلب الإكسسوارات
+    $stmt = $pdo->prepare("
+        SELECT a.*, 
+               COALESCE(a.current_quantity, 0) as current_quantity,
+               COALESCE(a.min_quantity, 0) as min_quantity
+        FROM accessories a
+        WHERE a.branch_id = ?
+        ORDER BY a.name
+    ");
+    $stmt->execute([$warehouse_id]);
+    $accessories = $stmt->fetchAll();
+
+    // جلب أوامر التصنيع (إذا كان الجدول موجود)
+    $production_orders = [];
+    try {
+        $stmt = $pdo->prepare("
+            SELECT po.*, p.name as product_name, p.code as product_code
+            FROM production_orders po
+            LEFT JOIN products p ON po.product_id = p.id
+            WHERE po.branch_id = ? AND po.status IN ('in_progress', 'pending')
+            ORDER BY po.created_at DESC
+        ");
+        $stmt->execute([$warehouse_id]);
+        $production_orders = $stmt->fetchAll();
+    } catch (Exception $e) {
+        // الجدول غير موجود
+        $production_orders = [];
+    }
+
+    // جلب المنتجات المكتملة (إذا كان الجدول موجود)
+    $finished_products = [];
+    try {
+        $stmt = $pdo->prepare("
+            SELECT fi.*, p.name as product_name, p.code as product_code, s.name as size_name
+            FROM finished_inventory fi
+            LEFT JOIN products p ON fi.product_id = p.id
+            LEFT JOIN sizes s ON fi.size_id = s.id
+            WHERE fi.branch_id = ? AND fi.status = 'in_stock'
+            ORDER BY fi.created_at DESC
+        ");
+        $stmt->execute([$warehouse_id]);
+        $finished_products = $stmt->fetchAll();
+    } catch (Exception $e) {
+        // الجدول غير موجود
+        $finished_products = [];
+    }
+
+} catch (Exception $e) {
+    $_SESSION['error_message'] = 'خطأ في جلب البيانات: ' . $e->getMessage();
+    header('Location: warehouses.php');
+    exit;
+}
+
+$page_title = 'محتويات المخزن - ' . $warehouse['name'];
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-boxes me-2"></i>محتويات المخزن: <?= htmlspecialchars($warehouse['name']) ?>
+                </h1>
+                <div>
+                    <a href="warehouses.php" class="btn btn-secondary">
+                        <i class="fas fa-arrow-right me-1"></i>العودة للمخازن
+                    </a>
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addFabricModal">
+                        <i class="fas fa-plus me-1"></i>إضافة قماش
+                    </button>
+                </div>
+            </div>
+
+            <!-- معلومات المخزن -->
+            <div class="row mb-4">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>معلومات المخزن</h5>
+                            <p><strong>الموقع:</strong> <?= htmlspecialchars($warehouse['address'] ?? 'غير محدد') ?></p>
+                            <p><strong>الوصف:</strong> <?= htmlspecialchars($warehouse['description'] ?? 'غير محدد') ?></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body text-center">
+                            <h3><?= count($fabrics) ?></h3>
+                            <p class="mb-0">نوع قماش</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- إحصائيات المخزن -->
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body text-center">
+                            <h3><?= count($fabrics) ?></h3>
+                            <p class="mb-0">نوع قماش</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-success text-white">
+                        <div class="card-body text-center">
+                            <h3><?= count($accessories) ?></h3>
+                            <p class="mb-0">نوع إكسسوار</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body text-center">
+                            <h3><?= count($production_orders) ?></h3>
+                            <p class="mb-0">أمر تصنيع</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-info text-white">
+                        <div class="card-body text-center">
+                            <h3><?= array_sum(array_column($finished_products, 'quantity')) ?></h3>
+                            <p class="mb-0">منتج مكتمل</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tabs للمحتويات -->
+            <ul class="nav nav-tabs" id="warehouseTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="fabrics-tab" data-bs-toggle="tab" data-bs-target="#fabrics" type="button">
+                        <i class="fas fa-cut me-1"></i>الأقمشة (<?= count($fabrics) ?>)
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="accessories-tab" data-bs-toggle="tab" data-bs-target="#accessories" type="button">
+                        <i class="fas fa-puzzle-piece me-1"></i>الإكسسوارات (<?= count($accessories) ?>)
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="production-tab" data-bs-toggle="tab" data-bs-target="#production" type="button">
+                        <i class="fas fa-cogs me-1"></i>قيد التصنيع (<?= count($production_orders) ?>)
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="finished-tab" data-bs-toggle="tab" data-bs-target="#finished" type="button">
+                        <i class="fas fa-box me-1"></i>منتجات مكتملة (<?= count($finished_products) ?>)
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="warehouseTabsContent">
+                <!-- تبويب الأقمشة -->
+                <div class="tab-pane fade show active" id="fabrics" role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>نوع القماش</th>
+                                            <th>الكمية الحالية</th>
+                                            <th>الحد الأدنى</th>
+                                            <th>الوحدة</th>
+                                            <th>الحالة</th>
+                                            <th>آخر تحديث</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (empty($fabrics)): ?>
+                                            <tr>
+                                                <td colspan="7" class="text-center text-muted py-4">
+                                                    <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                    لا توجد أقمشة في هذا المخزن
+                                                </td>
+                                            </tr>
+                                        <?php else: ?>
+                                            <?php foreach ($fabrics as $fabric): ?>
+                                                <tr>
+                                                    <td><strong><?= htmlspecialchars($fabric['name']) ?></strong></td>
+                                                    <td>
+                                                        <span class="badge bg-<?= $fabric['current_quantity'] > $fabric['min_quantity'] ? 'success' : 'warning' ?> fs-6">
+                                                            <?= number_format($fabric['current_quantity'], 2) ?>
+                                                        </span>
+                                                    </td>
+                                                    <td><?= number_format($fabric['min_quantity'], 2) ?></td>
+                                                    <td><?= htmlspecialchars($fabric['unit']) ?></td>
+                                                    <td>
+                                                        <?php if ($fabric['current_quantity'] <= 0): ?>
+                                                            <span class="badge bg-danger">نفد المخزون</span>
+                                                        <?php elseif ($fabric['current_quantity'] <= $fabric['min_quantity']): ?>
+                                                            <span class="badge bg-warning">مخزون منخفض</span>
+                                                        <?php else: ?>
+                                                            <span class="badge bg-success">متوفر</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td><?= date('Y-m-d', strtotime($fabric['updated_at'] ?? $fabric['created_at'])) ?></td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="viewFabricHistory(<?= $fabric['id'] ?>)">
+                                                            <i class="fas fa-history"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- تبويب الإكسسوارات -->
+                <div class="tab-pane fade" id="accessories" role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>الإكسسوار</th>
+                                            <th>النوع</th>
+                                            <th>الكمية الحالية</th>
+                                            <th>الحد الأدنى</th>
+                                            <th>الوحدة</th>
+                                            <th>الحالة</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (empty($accessories)): ?>
+                                            <tr>
+                                                <td colspan="7" class="text-center text-muted py-4">
+                                                    <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                    لا توجد إكسسوارات في هذا المخزن
+                                                </td>
+                                            </tr>
+                                        <?php else: ?>
+                                            <?php foreach ($accessories as $accessory): ?>
+                                                <tr>
+                                                    <td><strong><?= htmlspecialchars($accessory['name']) ?></strong></td>
+                                                    <td><?= htmlspecialchars($accessory['type'] ?? '-') ?></td>
+                                                    <td>
+                                                        <span class="badge bg-<?= $accessory['current_quantity'] > $accessory['min_quantity'] ? 'success' : 'warning' ?> fs-6">
+                                                            <?= number_format($accessory['current_quantity'], 0) ?>
+                                                        </span>
+                                                    </td>
+                                                    <td><?= number_format($accessory['min_quantity'], 0) ?></td>
+                                                    <td><?= htmlspecialchars($accessory['unit']) ?></td>
+                                                    <td>
+                                                        <?php if ($accessory['current_quantity'] <= 0): ?>
+                                                            <span class="badge bg-danger">نفد المخزون</span>
+                                                        <?php elseif ($accessory['current_quantity'] <= $accessory['min_quantity']): ?>
+                                                            <span class="badge bg-warning">مخزون منخفض</span>
+                                                        <?php else: ?>
+                                                            <span class="badge bg-success">متوفر</span>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="viewAccessoryHistory(<?= $accessory['id'] ?>)">
+                                                            <i class="fas fa-history"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- تبويب المنتجات قيد التصنيع -->
+                <div class="tab-pane fade" id="production" role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>رقم الأمر</th>
+                                            <th>المنتج</th>
+                                            <th>الكمية المطلوبة</th>
+                                            <th>المكتمل</th>
+                                            <th>الحالة</th>
+                                            <th>تاريخ البدء</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (empty($production_orders)): ?>
+                                            <tr>
+                                                <td colspan="7" class="text-center text-muted py-4">
+                                                    <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                    لا توجد أوامر تصنيع في هذا المخزن
+                                                </td>
+                                            </tr>
+                                        <?php else: ?>
+                                            <?php foreach ($production_orders as $order): ?>
+                                                <tr>
+                                                    <td><strong><?= htmlspecialchars($order['order_number']) ?></strong></td>
+                                                    <td><?= htmlspecialchars($order['product_name']) ?></td>
+                                                    <td><?= number_format($order['quantity']) ?></td>
+                                                    <td><?= number_format($order['completed_items']) ?></td>
+                                                    <td>
+                                                        <?php
+                                                        $status_colors = [
+                                                            'pending' => 'warning',
+                                                            'in_progress' => 'info',
+                                                            'completed' => 'success'
+                                                        ];
+                                                        $status_names = [
+                                                            'pending' => 'في الانتظار',
+                                                            'in_progress' => 'قيد التنفيذ',
+                                                            'completed' => 'مكتمل'
+                                                        ];
+                                                        ?>
+                                                        <span class="badge bg-<?= $status_colors[$order['status']] ?>">
+                                                            <?= $status_names[$order['status']] ?>
+                                                        </span>
+                                                    </td>
+                                                    <td><?= date('Y-m-d', strtotime($order['created_at'])) ?></td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="viewProductionOrder(<?= $order['id'] ?>)">
+                                                            <i class="fas fa-eye"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- تبويب المنتجات المكتملة -->
+                <div class="tab-pane fade" id="finished" role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>المنتج</th>
+                                            <th>المقاس</th>
+                                            <th>الكمية</th>
+                                            <th>تكلفة الوحدة</th>
+                                            <th>QR Code</th>
+                                            <th>تاريخ الإنتاج</th>
+                                            <th>الإجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (empty($finished_products)): ?>
+                                            <tr>
+                                                <td colspan="7" class="text-center text-muted py-4">
+                                                    <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                                    لا توجد منتجات مكتملة في هذا المخزن
+                                                </td>
+                                            </tr>
+                                        <?php else: ?>
+                                            <?php foreach ($finished_products as $product): ?>
+                                                <tr>
+                                                    <td><strong><?= htmlspecialchars($product['product_name']) ?></strong></td>
+                                                    <td><?= htmlspecialchars($product['size_name'] ?? '-') ?></td>
+                                                    <td><?= number_format($product['quantity']) ?></td>
+                                                    <td><?= number_format($product['unit_cost'], 2) ?> ج.م</td>
+                                                    <td>
+                                                        <?php if ($product['qr_code']): ?>
+                                                            <code><?= htmlspecialchars($product['qr_code']) ?></code>
+                                                        <?php else: ?>
+                                                            -
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td><?= date('Y-m-d', strtotime($product['created_at'])) ?></td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="viewFinishedProduct(<?= $product['id'] ?>)">
+                                                            <i class="fas fa-eye"></i>
+                                                        </button>
+                                                        <button class="btn btn-sm btn-outline-success" onclick="shipProduct(<?= $product['id'] ?>)">
+                                                            <i class="fas fa-shipping-fast"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+function viewFabricHistory(fabricId) {
+    // سيتم إضافة عرض تاريخ الحركات
+    alert('سيتم إضافة عرض تاريخ الحركات قريباً');
+}
+
+function editFabric(fabricId) {
+    // سيتم إضافة تعديل القماش
+    alert('سيتم إضافة تعديل القماش قريباً');
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+</body>
+</html>
+
+</body>
+</html>

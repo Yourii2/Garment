@@ -1,0 +1,154 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+echo "<h3>تشخيص وإصلاح جدول orders</h3>";
+
+try {
+    // التحقق من بنية جدول orders
+    $stmt = $pdo->query("DESCRIBE orders");
+    $columns = $stmt->fetchAll();
+    
+    echo "<h4>بنية جدول orders الحالية:</h4>";
+    foreach ($columns as $column) {
+        echo "- " . $column['Field'] . " (" . $column['Type'] . ") - Default: " . ($column['Default'] ?? 'NULL') . "<br>";
+    }
+    
+    // البحث عن عمود product_id المشكل
+    $has_product_id = false;
+    foreach ($columns as $column) {
+        if ($column['Field'] === 'product_id') {
+            $has_product_id = true;
+            break;
+        }
+    }
+    
+    if ($has_product_id) {
+        echo "<br><div class='alert alert-warning'>تم العثور على عمود product_id في جدول orders - سيتم حذفه</div>";
+        
+        // البحث عن المفاتيح الخارجية المرتبطة بـ product_id
+        $stmt = $pdo->query("
+            SELECT CONSTRAINT_NAME 
+            FROM information_schema.KEY_COLUMN_USAGE 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = 'orders' 
+            AND COLUMN_NAME = 'product_id' 
+            AND REFERENCED_TABLE_NAME IS NOT NULL
+        ");
+        $foreign_keys = $stmt->fetchAll();
+        
+        // حذف المفاتيح الخارجية
+        foreach ($foreign_keys as $fk) {
+            $pdo->exec("ALTER TABLE orders DROP FOREIGN KEY " . $fk['CONSTRAINT_NAME']);
+            echo "تم حذف المفتاح الخارجي: " . $fk['CONSTRAINT_NAME'] . "<br>";
+        }
+        
+        // حذف العمود المشكل
+        $pdo->exec("ALTER TABLE orders DROP COLUMN product_id");
+        echo "تم حذف عمود product_id من جدول orders<br>";
+        
+        // حذف عمود quantity إذا كان موجود
+        $stmt = $pdo->query("SHOW COLUMNS FROM orders LIKE 'quantity'");
+        if ($stmt->rowCount() > 0) {
+            $pdo->exec("ALTER TABLE orders DROP COLUMN quantity");
+            echo "تم حذف عمود quantity من جدول orders<br>";
+        }
+    } else {
+        echo "<br><div class='alert alert-info'>لا يوجد عمود product_id في جدول orders</div>";
+    }
+    
+    // إعادة إنشاء الجدول بالبنية الصحيحة
+    echo "<br><h4>إعادة إنشاء جدول orders...</h4>";
+    
+    $pdo->exec("DROP TABLE IF EXISTS order_items");
+    $pdo->exec("DROP TABLE IF EXISTS orders");
+    echo "تم حذف الجداول القديمة<br>";
+    
+    // إنشاء جدول orders بالبنية الصحيحة
+    $pdo->exec("
+        CREATE TABLE orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_number VARCHAR(50) UNIQUE NOT NULL,
+            customer_id INT NULL,
+            customer_name VARCHAR(255) NOT NULL,
+            customer_phone VARCHAR(20) NOT NULL,
+            customer_address TEXT,
+            status ENUM('pending', 'ready', 'in_production', 'completed', 'cancelled') DEFAULT 'pending',
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+    ");
+    echo "تم إنشاء جدول orders بنجاح<br>";
+    
+    // إنشاء جدول order_items
+    $pdo->exec("
+        CREATE TABLE order_items (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL,
+            product_id INT NOT NULL,
+            quantity INT NOT NULL DEFAULT 1,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_order_id (order_id),
+            INDEX idx_product_id (product_id)
+        )
+    ");
+    echo "تم إنشاء جدول order_items بنجاح<br>";
+    
+    // التحقق من البنية الجديدة
+    echo "<br><h4>بنية جدول orders الجديدة:</h4>";
+    $stmt = $pdo->query("DESCRIBE orders");
+    $columns = $stmt->fetchAll();
+    foreach ($columns as $column) {
+        echo "- " . $column['Field'] . " (" . $column['Type'] . ")<br>";
+    }
+    
+    echo "<br><h4>بنية جدول order_items:</h4>";
+    $stmt = $pdo->query("DESCRIBE order_items");
+    $columns = $stmt->fetchAll();
+    foreach ($columns as $column) {
+        echo "- " . $column['Field'] . " (" . $column['Type'] . ")<br>";
+    }
+    
+    echo "<br><div class='alert alert-success'>تم إصلاح الجداول بنجاح!</div>";
+    echo "<a href='orders.php' class='btn btn-primary'>العودة لصفحة الطلبيات</a>";
+    
+} catch (Exception $e) {
+    echo "خطأ: " . $e->getMessage();
+}
+$page_title = 'Fix orders table';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    
+
+<?php include '../includes/footer.php'; ?>
+</body>
+</html>
+
+</body>
+</html>

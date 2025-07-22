@@ -1,0 +1,211 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'الملخص الشهري';
+
+// فلاتر
+$year = $_GET['year'] ?? date('Y');
+$month = $_GET['month'] ?? date('m');
+
+// جلب الملخص الشهري
+$monthly_data = [];
+
+try {
+    $month_start = "$year-$month-01";
+    $month_end = date('Y-m-t', strtotime($month_start));
+    
+    // إحصائيات الطلبيات
+    $stmt = $pdo->prepare("
+        SELECT 
+            COUNT(*) as total_orders,
+            COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_orders,
+            COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_orders,
+            COUNT(CASE WHEN status = 'in_production' THEN 1 END) as in_production_orders
+        FROM orders 
+        WHERE DATE(created_at) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$month_start, $month_end]);
+    $orders_stats = $stmt->fetch();
+    
+    // إحصائيات الإنتاج
+    $stmt = $pdo->prepare("
+        SELECT 
+            COUNT(*) as total_assignments,
+            SUM(quantity_assigned) as total_assigned,
+            SUM(quantity_completed) as total_completed,
+            SUM(quantity_defective) as total_defective
+        FROM worker_assignments 
+        WHERE DATE(created_at) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$month_start, $month_end]);
+    $production_stats = $stmt->fetch();
+    
+    // إحصائيات مالية
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(oi.quantity * oi.unit_price), 0) as total_sales
+        FROM orders o
+        JOIN order_items oi ON o.id = oi.order_id
+        WHERE DATE(o.created_at) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$month_start, $month_end]);
+    $total_sales = $stmt->fetchColumn();
+    
+    $monthly_data = [
+        'orders' => $orders_stats,
+        'production' => $production_stats,
+        'sales' => $total_sales,
+        'month_name' => date('F Y', strtotime($month_start))
+    ];
+    
+} catch (Exception $e) {
+    $error_message = 'خطأ في جلب الملخص الشهري: ' . $e->getMessage();
+}
+
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">الملخص الشهري</h1>
+                <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="fas fa-print me-2"></i>طباعة
+                </button>
+            </div>
+
+            <!-- فلاتر -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form method="GET" class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">السنة</label>
+                            <select class="form-control" name="year">
+                                <?php for ($y = date('Y'); $y >= date('Y') - 5; $y--): ?>
+                                <option value="<?= $y ?>" <?= $year == $y ? 'selected' : '' ?>><?= $y ?></option>
+                                <?php endfor; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">الشهر</label>
+                            <select class="form-control" name="month">
+                                <?php for ($m = 1; $m <= 12; $m++): ?>
+                                <option value="<?= sprintf('%02d', $m) ?>" <?= $month == sprintf('%02d', $m) ? 'selected' : '' ?>>
+                                    <?= date('F', mktime(0, 0, 0, $m, 1)) ?>
+                                </option>
+                                <?php endfor; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="submit" class="btn btn-primary d-block">عرض الملخص</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <h3 class="mb-4">ملخص شهر <?= $monthly_data['month_name'] ?></h3>
+
+            <!-- إحصائيات الطلبيات -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>إحصائيات الطلبيات</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4><?= $monthly_data['orders']['total_orders'] ?></h4>
+                                <p>إجمالي الطلبيات</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4 class="text-success"><?= $monthly_data['orders']['completed_orders'] ?></h4>
+                                <p>طلبيات مكتملة</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4 class="text-warning"><?= $monthly_data['orders']['in_production_orders'] ?></h4>
+                                <p>قيد الإنتاج</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4 class="text-info"><?= $monthly_data['orders']['pending_orders'] ?></h4>
+                                <p>في الانتظار</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- إحصائيات الإنتاج -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>إحصائيات الإنتاج</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4><?= $monthly_data['production']['total_assignments'] ?></h4>
+                                <p>إجمالي المهام</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4><?= $monthly_data['production']['total_assigned'] ?></h4>
+                                <p>القطع المخصصة</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4 class="text-success"><?= $monthly_data['production']['total_completed'] ?></h4>
+                                <p>القطع المكتملة</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <h4 class="text-danger"><?= $monthly_data['production']['total_defective'] ?></h4>
+                                <p>القطع المعيبة</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- إحصائيات مالية -->
+            <div class="card">
+                <div class="card-header">
+                    <h5>الإحصائيات المالية</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="text-center">
+                                <h3 class="text-success"><?= number_format($monthly_data['sales'], 2) ?> ج.م</h3>
+                                <p>إجمالي المبيعات</p>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-center">
+                                <h3 class="text-info">
+                                    <?= $monthly_data['orders']['total_orders'] > 0 ? 
+                                        number_format($monthly_data['sales'] / $monthly_data['orders']['total_orders'], 2) : 0 ?> ج.م
+                                </h3>
+                                <p>متوسط قيمة الطلبية</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>

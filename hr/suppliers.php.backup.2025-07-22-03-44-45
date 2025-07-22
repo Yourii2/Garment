@@ -1,0 +1,482 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// نقل صفحة الموردين من مجلد inventory إلى hr
+// معالجة إضافة مورد جديد
+if (isset($_POST['add_supplier'])) {
+    try {
+        $name = $_POST['name'];
+        $company_name = $_POST['company_name'] ?? '';
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        
+        $stmt = $pdo->prepare("INSERT INTO suppliers (name, company_name, phone, email, address, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
+        $result = $stmt->execute([$name, $company_name, $phone, $email, $address]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة المورد بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: suppliers.php');
+    exit;
+}
+
+// معالجة تحديث مورد
+if (isset($_POST['update_supplier'])) {
+    try {
+        $id = $_POST['supplier_id'];
+        $name = $_POST['name'];
+        $company_name = $_POST['company_name'] ?? '';
+        $phone = $_POST['phone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $address = $_POST['address'] ?? '';
+        
+        $stmt = $pdo->prepare("UPDATE suppliers SET name = ?, company_name = ?, phone = ?, email = ?, address = ? WHERE id = ?");
+        $result = $stmt->execute([$name, $company_name, $phone, $email, $address, $id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم تحديث المورد بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: suppliers.php');
+    exit;
+}
+
+// معالجة حذف مورد
+if (isset($_POST['delete_supplier'])) {
+    try {
+        $id = $_POST['supplier_id'];
+        
+        // التحقق من وجود فواتير مرتبطة (إذا كان الجدول موجود)
+        $invoices_count = 0;
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM inventory_invoices WHERE supplier_id = ?");
+            $stmt->execute([$id]);
+            $invoices_count = $stmt->fetchColumn();
+        } catch (Exception $e) {
+            // جدول الفواتير غير موجود، يمكن المتابعة
+            $invoices_count = 0;
+        }
+        
+        if ($invoices_count > 0) {
+            $_SESSION['error_message'] = 'لا يمكن حذف هذا المورد لوجود فواتير مرتبطة به';
+        } else {
+            $stmt = $pdo->prepare("DELETE FROM suppliers WHERE id = ?");
+            $result = $stmt->execute([$id]);
+            
+            if ($result) {
+                $_SESSION['success_message'] = 'تم حذف المورد بنجاح';
+            } else {
+                $_SESSION['error_message'] = 'فشل في حذف المورد';
+            }
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: suppliers.php');
+    exit;
+}
+
+// جلب الموردين
+$stmt = $pdo->query("SELECT * FROM suppliers ORDER BY name ASC");
+$suppliers = $stmt->fetchAll();
+
+$page_title = 'إدارة الموردين';
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <!-- عرض الرسائل -->
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    <i class="fas fa-check-circle me-2"></i>
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-truck text-primary me-2"></i>
+                    إدارة الموردين
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addSupplierModal">
+                    <i class="fas fa-plus me-2"></i>إضافة مورد جديد
+                </button>
+            </div>
+
+            <!-- جدول الموردين -->
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>اسم المورد</th>
+                                    <th>اسم الشركة</th>
+                                    <th>الهاتف</th>
+                                    <th>البريد الإلكتروني</th>
+                                    <th>الرصيد الحالي</th>
+                                    <th>الحالة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($suppliers as $supplier): ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($supplier['name']) ?></td>
+                                        <td><?= htmlspecialchars($supplier['company_name']) ?></td>
+                                        <td><?= htmlspecialchars($supplier['phone']) ?></td>
+                                        <td><?= htmlspecialchars($supplier['email']) ?></td>
+                                        <td><?= number_format($supplier['current_balance'], 2) ?> ج.م</td>
+                                        <td>
+                                            <span class="badge <?= $supplier['is_active'] ? 'bg-success' : 'bg-danger' ?>">
+                                                <?= $supplier['is_active'] ? 'نشط' : 'غير نشط' ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-sm btn-info" onclick="viewSupplier(<?= $supplier['id'] ?>)" title="عرض">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-warning" data-bs-toggle="modal" data-bs-target="#editSupplierModal<?= $supplier['id'] ?>" title="تعديل">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-danger" onclick="confirmDeleteSupplier(<?= $supplier['id'] ?>, '<?= addslashes($supplier['name']) ?>')" title="حذف">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<?php include '../includes/footer.php'; ?>
+
+<!-- Modal إضافة مورد -->
+<div class="modal fade" id="addSupplierModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة مورد جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم المورد *</label>
+                                <input type="text" name="name" class="form-control" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم الشركة</label>
+                                <input type="text" name="company_name" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">رقم الهاتف</label>
+                                <input type="text" name="phone" class="form-control">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" name="email" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea name="address" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_supplier" class="btn btn-primary">إضافة المورد</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تعديل مورد -->
+<?php foreach ($suppliers as $supplier): ?>
+<div class="modal fade" id="editSupplierModal<?= $supplier['id'] ?>" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تعديل المورد: <?= htmlspecialchars($supplier['name']) ?></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="supplier_id" value="<?= $supplier['id'] ?>">
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم المورد *</label>
+                                <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($supplier['name']) ?>" required>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">اسم الشركة</label>
+                                <input type="text" name="company_name" class="form-control" value="<?= htmlspecialchars($supplier['company_name']) ?>">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">رقم الهاتف</label>
+                                <input type="text" name="phone" class="form-control" value="<?= htmlspecialchars($supplier['phone']) ?>">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">البريد الإلكتروني</label>
+                                <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($supplier['email']) ?>">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea name="address" class="form-control" rows="3"><?= htmlspecialchars($supplier['address']) ?></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="update_supplier" class="btn btn-primary">تحديث المورد</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
+
+<!-- نموذج حذف المورد -->
+<form id="deleteSupplierForm" method="POST" style="display: none;">
+    <input type="hidden" name="delete_supplier" value="1">
+    <input type="hidden" id="deleteSupplierId" name="supplier_id">
+</form>
+
+<!-- Modal عرض تفاصيل المورد -->
+<div class="modal fade" id="viewSupplierModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">تفاصيل المورد: <span id="supplierName"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">معلومات المورد</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="supplierDetails"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">الملخص المالي</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="supplierFinancial"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4">
+                    <ul class="nav nav-tabs" id="supplierTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="invoices-tab" data-bs-toggle="tab" data-bs-target="#invoices" type="button" role="tab">
+                                الفواتير
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="payments-tab" data-bs-toggle="tab" data-bs-target="#payments" type="button" role="tab">
+                                المدفوعات
+                            </button>
+                        </li>
+                    </ul>
+                    <div class="tab-content" id="supplierTabsContent">
+                        <div class="tab-pane fade show active" id="invoices" role="tabpanel">
+                            <div class="table-responsive mt-3">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>رقم الفاتورة</th>
+                                            <th>التاريخ</th>
+                                            <th>المبلغ</th>
+                                            <th>الحالة</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="supplierInvoices">
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="payments" role="tabpanel">
+                            <div class="table-responsive mt-3">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>التاريخ</th>
+                                            <th>المبلغ</th>
+                                            <th>طريقة الدفع</th>
+                                            <th>الوصف</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="supplierPayments">
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function confirmDeleteSupplier(id, name) {
+    if (confirm('هل أنت متأكد من حذف المورد: ' + name + '؟\nسيتم حذف جميع البيانات المرتبطة به نهائين.')) {
+        // إنشاء نموذج ديناميكي
+        var form = document.createElement('form');
+        form.method = 'POST';
+        form.innerHTML = '<input type="hidden" name="delete_supplier" value="1">' +
+                        '<input type="hidden" name="supplier_id" value="' + id + '">';
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function viewSupplier(supplierId) {
+    console.log('Loading supplier details for ID:', supplierId);
+    
+    fetch('get_supplier_details.php?id=' + supplierId)
+        .then(response => {
+            console.log('Response status:', response.status);
+            return response.json();
+        })
+        .then(data => {
+            console.log('Response data:', data);
+            
+            if (data.success) {
+                const supplier = data.supplier;
+                
+                document.getElementById('supplierName').textContent = supplier.name;
+                
+                document.getElementById('supplierDetails').innerHTML = `
+                    <p><strong>الاسم:</strong> ${supplier.name}</p>
+                    <p><strong>اسم الشركة:</strong> ${supplier.company_name || 'غير محدد'}</p>
+                    <p><strong>الهاتف:</strong> ${supplier.phone || 'غير محدد'}</p>
+                    <p><strong>البريد الإلكتروني:</strong> ${supplier.email || 'غير محدد'}</p>
+                    <p><strong>العنوان:</strong> ${supplier.address || 'غير محدد'}</p>
+                    <p><strong>الحالة:</strong> ${supplier.is_active ? 'نشط' : 'غير نشط'}</p>
+                `;
+                
+                document.getElementById('supplierFinancial').innerHTML = `
+                    <p><strong>الرصيد الحالي:</strong> ${parseFloat(supplier.current_balance || 0).toLocaleString()} ج.م</p>
+                    <p><strong>إجمالي المشتريات:</strong> ${parseFloat(data.total_purchases || 0).toLocaleString()} ج.م</p>
+                    <p><strong>عدد الفواتير:</strong> ${data.invoices_count || 0}</p>
+                    <p><strong>إجمالي المدفوعات:</strong> ${parseFloat(data.total_payments || 0).toLocaleString()} ج.م</p>
+                `;
+                
+                let invoicesHtml = '';
+                if (data.invoices && data.invoices.length > 0) {
+                    data.invoices.forEach(invoice => {
+                        invoicesHtml += `
+                            <tr>
+                                <td>#${invoice.id}</td>
+                                <td>${invoice.invoice_date}</td>
+                                <td>${parseFloat(invoice.total_amount).toLocaleString()} ج.م</td>
+                                <td><span class="badge bg-info">${invoice.status}</span></td>
+                            </tr>
+                        `;
+                    });
+                } else {
+                    invoicesHtml = '<tr><td colspan="4" class="text-center">لا توجد فواتير</td></tr>';
+                }
+                document.getElementById('supplierInvoices').innerHTML = invoicesHtml;
+                
+                let paymentsHtml = '';
+                if (data.payments && data.payments.length > 0) {
+                    data.payments.forEach(payment => {
+                        paymentsHtml += `
+                            <tr>
+                                <td>${payment.payment_date}</td>
+                                <td>${parseFloat(payment.amount).toLocaleString()} ج.م</td>
+                                <td>${payment.payment_method || 'غير محدد'}</td>
+                                <td>${payment.description || ''}</td>
+                            </tr>
+                        `;
+                    });
+                } else {
+                    paymentsHtml = '<tr><td colspan="4" class="text-center">لا توجد مدفوعات</td></tr>';
+                }
+                document.getElementById('supplierPayments').innerHTML = paymentsHtml;
+                
+                new bootstrap.Modal(document.getElementById('viewSupplierModal')).show();
+            } else {
+                alert('خطأ: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('حدث خطأ في جلب البيانات: ' + error.message);
+        });
+}
+</script>
+
+
+
+
+
+
+
+

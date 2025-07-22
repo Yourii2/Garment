@@ -1,0 +1,64 @@
+<?php
+require_once '../../config/config.php';
+requireLogin();
+
+if (!isset($_GET['fabric_id'])) {
+    echo '<div class="alert alert-danger">معرف القماش غير محدد</div>';
+    exit;
+}
+
+$fabric_id = (int)$_GET['fabric_id'];
+
+try {
+    // جلب معلومات القماش
+    $stmt = $pdo->prepare("SELECT * FROM fabric_types WHERE id = ?");
+    $stmt->execute([$fabric_id]);
+    $fabric = $stmt->fetch();
+    
+    if (!$fabric) {
+        echo '<div class="alert alert-danger">القماش غير موجود</div>';
+        exit;
+    }
+    
+    // جلب المعاملات
+    $stmt = $pdo->prepare("
+        SELECT im.*, u.full_name as user_name
+        FROM inventory_movements im
+        LEFT JOIN users u ON im.user_id = u.id
+        WHERE im.fabric_id = ?
+        ORDER BY im.created_at DESC
+    ");
+    $stmt->execute([$fabric_id]);
+    $transactions = $stmt->fetchAll();
+    
+    echo '<h5>معاملات القماش: ' . htmlspecialchars($fabric['name']) . '</h5>';
+    
+    if (empty($transactions)) {
+        echo '<div class="alert alert-info">لا توجد معاملات لهذا القماش</div>';
+    } else {
+        echo '<div class="table-responsive">';
+        echo '<table class="table table-striped">';
+        echo '<thead><tr><th>النوع</th><th>الكمية</th><th>المستخدم</th><th>التاريخ</th><th>الملاحظات</th></tr></thead>';
+        echo '<tbody>';
+        
+        foreach ($transactions as $transaction) {
+            $type = $transaction['type'] == 'in' ? 'إدخال' : 'إخراج';
+            $class = $transaction['type'] == 'in' ? 'text-success' : 'text-danger';
+            
+            echo '<tr>';
+            echo '<td><span class="' . $class . '">' . $type . '</span></td>';
+            echo '<td>' . $transaction['quantity'] . '</td>';
+            echo '<td>' . htmlspecialchars($transaction['user_name'] ?? 'غير محدد') . '</td>';
+            echo '<td>' . $transaction['created_at'] . '</td>';
+            echo '<td>' . htmlspecialchars($transaction['notes'] ?? '') . '</td>';
+            echo '</tr>';
+        }
+        
+        echo '</tbody></table>';
+        echo '</div>';
+    }
+    
+} catch (Exception $e) {
+    echo '<div class="alert alert-danger">خطأ في تحميل البيانات: ' . htmlspecialchars($e->getMessage()) . '</div>';
+}
+?>

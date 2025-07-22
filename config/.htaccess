@@ -1,0 +1,3 @@
+# حماية مجلد الإعدادات
+Order Deny,Allow
+Deny from all

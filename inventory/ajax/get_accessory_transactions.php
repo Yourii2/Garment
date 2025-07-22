@@ -1,0 +1,98 @@
+<?php
+require_once '../../config/config.php';
+requireLogin();
+
+if (!isset($_GET['accessory_id'])) {
+    echo '<div class="alert alert-danger">معرف الإكسسوار غير محدد</div>';
+    exit;
+}
+
+$accessory_id = (int)$_GET['accessory_id'];
+
+try {
+    // جلب معلومات الإكسسوار
+    $stmt = $pdo->prepare("SELECT * FROM accessories WHERE id = ?");
+    $stmt->execute([$accessory_id]);
+    $accessory = $stmt->fetch();
+    
+    if (!$accessory) {
+        echo '<div class="alert alert-danger">الإكسسوار غير موجود</div>';
+        exit;
+    }
+    
+    // جلب المعاملات
+    $stmt = $pdo->prepare("
+        SELECT im.*, u.full_name as user_name
+        FROM inventory_movements im
+        LEFT JOIN users u ON im.user_id = u.id
+        WHERE im.accessory_id = ?
+        ORDER BY im.created_at DESC
+    ");
+    $stmt->execute([$accessory_id]);
+    $transactions = $stmt->fetchAll();
+    
+    echo '<h5>معاملات الإكسسوار: ' . htmlspecialchars($accessory['name']) . '</h5>';
+    
+    if (empty($transactions)) {
+        echo '<div class="alert alert-info">لا توجد معاملات لهذا الإكسسوار</div>';
+    } else {
+        echo '<div class="table-responsive">';
+        echo '<table class="table table-striped">';
+        echo '<thead><tr><th>النوع</th><th>الكمية</th><th>المستخدم</th><th>التاريخ</th><th>الملاحظات</th></tr></thead>';
+        echo '<tbody>';
+        
+        foreach ($transactions as $transaction) {
+            $type = $transaction['type'] == 'in' ? 'إدخال' : 'إخراج';
+            $class = $transaction['type'] == 'in' ? 'text-success' : 'text-danger';
+            
+            echo '<tr>';
+            echo '<td><span class="' . $class . '">' . $type . '</span></td>';
+            echo '<td>' . $transaction['quantity'] . '</td>';
+            echo '<td>' . htmlspecialchars($transaction['user_name'] ?? 'غير محدد') . '</td>';
+            echo '<td>' . $transaction['created_at'] . '</td>';
+            echo '<td>' . htmlspecialchars($transaction['notes'] ?? '') . '</td>';
+            echo '</tr>';
+        }
+        
+        echo '</tbody></table>';
+        echo '</div>';
+    }
+    
+} catch (Exception $e) {
+    echo '<div class="alert alert-danger">خطأ في تحميل البيانات: ' . htmlspecialchars($e->getMessage()) . '</div>';
+}
+$page_title = 'Get accessory transactions';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    
+
+<?php include '../includes/footer.php'; ?>
+</body>
+</html>
+
+</body>
+</html>

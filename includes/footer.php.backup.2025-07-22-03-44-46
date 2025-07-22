@@ -1,0 +1,12 @@
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="../assets/js/sidebar.js"></script>
+    
+    <!-- Additional JavaScript if needed -->
+    <?php if (isset($additional_js)): ?>
+        <?php foreach ($additional_js as $js): ?>
+            <script src="<?= $js ?>"></script>
+        <?php endforeach; ?>
+    <?php endif; ?>
+</body>
+</html>
+

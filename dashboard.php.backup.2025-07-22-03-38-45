@@ -1,0 +1,292 @@
+<?php
+require_once 'config/config.php';
+checkLogin();
+
+// جلب الإحصائيات من قاعدة البيانات مع معالجة محسنة للأخطاء
+$stats = [
+    'total_orders' => 0,
+    'pending_orders' => 0,
+    'completed_orders' => 0,
+    'total_products' => 0,
+    'low_stock_items' => 0,
+    'total_workers' => 0,
+    'active_workers' => 0,
+    'recent_movements' => [],
+    'total_fabrics' => 0,
+    'total_accessories' => 0,
+    'total_low_stock' => 0
+];
+
+try {
+    // إحصائيات الأقمشة
+    $stmt = $pdo->query("SELECT COUNT(*) as total_fabrics FROM fabric_types WHERE is_active = 1");
+    $result = $stmt->fetch();
+    $stats['total_fabrics'] = $result ? ($result['total_fabrics'] ?: 0) : 0;
+    
+    // إحصائيات الإكسسوارات
+    $stmt = $pdo->query("SELECT COUNT(*) as total_accessories FROM accessories WHERE is_active = 1");
+    $result = $stmt->fetch();
+    $stats['total_accessories'] = $result ? ($result['total_accessories'] ?: 0) : 0;
+    
+    // إحصائيات المخزون المنخفض مع معالجة القيم الفارغة
+    $stmt = $pdo->query("
+        SELECT COUNT(*) as low_stock 
+        FROM fabric_types 
+        WHERE is_active = 1 
+        AND COALESCE(current_quantity, 0) <= COALESCE(min_quantity, 0)
+        AND COALESCE(min_quantity, 0) > 0
+    ");
+    $result = $stmt->fetch();
+    $low_stock_fabrics = $result ? ($result['low_stock'] ?: 0) : 0;
+
+    $stmt = $pdo->query("
+        SELECT COUNT(*) as low_stock 
+        FROM accessories 
+        WHERE is_active = 1 
+        AND COALESCE(current_quantity, 0) <= COALESCE(min_quantity, 0)
+        AND COALESCE(min_quantity, 0) > 0
+    ");
+    $result = $stmt->fetch();
+    $low_stock_accessories = $result ? ($result['low_stock'] ?: 0) : 0;
+    
+    $stats['total_low_stock'] = $low_stock_fabrics + $low_stock_accessories;
+    
+    // إحصائيات الطلبات (إذا كان الجدول موجود)
+    $stmt = $pdo->query("SHOW TABLES LIKE 'orders'");
+    if ($stmt->rowCount() > 0) {
+        $stmt = $pdo->query("SELECT COUNT(*) as total_orders FROM orders");
+        $result = $stmt->fetch();
+        $stats['total_orders'] = $result ? ($result['total_orders'] ?: 0) : 0;
+    }
+    
+    // آخر الحركات مع معالجة أفضل
+    $stmt = $pdo->prepare("
+        SELECT im.*, 
+               im.type,
+               COALESCE(ft.name, 'غير محدد') as fabric_name, 
+               COALESCE(a.name, 'غير محدد') as accessory_name,
+               COALESCE(u.full_name, 'غير محدد') as user_name
+        FROM inventory_movements im
+        LEFT JOIN fabric_types ft ON im.fabric_id = ft.id
+        LEFT JOIN accessories a ON im.accessory_id = a.id
+        LEFT JOIN users u ON im.user_id = u.id
+        ORDER BY im.created_at DESC 
+        LIMIT 5
+    ");
+    $stmt->execute();
+    $stats['recent_movements'] = $stmt->fetchAll();
+    
+    // تسجيل نشاط الدخول للوحة التحكم
+    if (function_exists('logActivity')) {
+        logActivity('dashboard_access', 'دخول لوحة التحكم');
+    }
+    
+} catch (Exception $e) {
+    if (function_exists('logError')) {
+        logError('Dashboard stats loading failed', ['error' => $e->getMessage()]);
+    }
+    $_SESSION['error_message'] = 'حدث خطأ في تحميل الإحصائيات: ' . $e->getMessage();
+    
+    // تعيين قيم افتراضية في حالة الخطأ
+    $stats = [
+        'total_orders' => 0,
+        'pending_orders' => 0,
+        'completed_orders' => 0,
+        'total_products' => 0,
+        'low_stock_items' => 0,
+        'total_workers' => 0,
+        'active_workers' => 0,
+        'recent_movements' => [],
+        'total_fabrics' => 0,
+        'total_accessories' => 0,
+        'total_low_stock' => 0
+    ];
+}
+
+$page_title = 'لوحة التحكم - ' . SYSTEM_NAME;
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include 'includes/navbar.php'; ?>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <?php include 'includes/sidebar.php'; ?>
+            
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+                <div class="page-header">
+                    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center">
+                        <div>
+                            <h1 class="h2">
+                                <i class="fas fa-tachometer-alt me-2"></i>
+                                مرحباً بك في لوحة التحكم
+                            </h1>
+                            <p class="lead">إدارة شاملة لمصنع الملابس</p>
+                        </div>
+                        <div class="btn-toolbar mb-2 mb-md-0">
+                            <div class="btn-group me-2">
+                                <button type="button" class="btn btn-outline-secondary">
+                                    <i class="fas fa-download me-1"></i>تصدير
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary">
+                                    <i class="fas fa-print me-1"></i>طباعة
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- الإحصائيات -->
+                <div class="row mb-4">
+                    <div class="col-xl-3 col-md-6 mb-4">
+                        <div class="card stats-card primary shadow h-100 py-2">
+                            <div class="card-body">
+                                <div class="row no-gutters align-items-center">
+                                    <div class="col mr-2">
+                                        <div class="stats-label mb-1">
+                                            إجمالي الأقمشة
+                                        </div>
+                                        <div class="stats-number">
+                                            <?= number_format($stats['total_fabrics'] ?? 0) ?>
+                                        </div>
+                                    </div>
+                                    <div class="col-auto">
+                                        <i class="fas fa-cut stats-icon"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-xl-3 col-md-6 mb-4">
+                        <div class="card stats-card success shadow h-100 py-2">
+                            <div class="card-body">
+                                <div class="row no-gutters align-items-center">
+                                    <div class="col mr-2">
+                                        <div class="stats-label mb-1">
+                                            إجمالي الإكسسوارات
+                                        </div>
+                                        <div class="stats-number">
+                                            <?= number_format($stats['total_accessories'] ?? 0) ?>
+                                        </div>
+                                    </div>
+                                    <div class="col-auto">
+                                        <i class="fas fa-puzzle-piece stats-icon"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-xl-3 col-md-6 mb-4">
+                        <div class="card stats-card warning shadow h-100 py-2">
+                            <div class="card-body">
+                                <div class="row no-gutters align-items-center">
+                                    <div class="col mr-2">
+                                        <div class="stats-label mb-1">
+                                            مخزون منخفض
+                                        </div>
+                                        <div class="stats-number">
+                                            <?= number_format($stats['total_low_stock'] ?? 0) ?>
+                                        </div>
+                                    </div>
+                                    <div class="col-auto">
+                                        <i class="fas fa-exclamation-triangle stats-icon"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-xl-3 col-md-6 mb-4">
+                        <div class="card stats-card info shadow h-100 py-2">
+                            <div class="card-body">
+                                <div class="row no-gutters align-items-center">
+                                    <div class="col mr-2">
+                                        <div class="stats-label mb-1">
+                                            إجمالي الطلبات
+                                        </div>
+                                        <div class="stats-number">
+                                            <?= number_format($stats['total_orders'] ?? 0) ?>
+                                        </div>
+                                    </div>
+                                    <div class="col-auto">
+                                        <i class="fas fa-clipboard-list stats-icon"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- آخر حركات المخزون -->
+                <div class="card shadow mb-4">
+                    <div class="card-header py-3">
+                        <h6 class="m-0 font-weight-bold">
+                            <i class="fas fa-history me-2"></i>
+                            آخر حركات المخزون
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <?php if (!empty($stats['recent_movements'])): ?>
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>النوع</th>
+                                            <th>الصنف</th>
+                                            <th>الكمية</th>
+                                            <th>المستخدم</th>
+                                            <th>التاريخ</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($stats['recent_movements'] as $movement): ?>
+                                            <tr>
+                                                <td>
+                                                    <span class="badge <?= $movement['type'] == 'in' ? 'bg-success' : 'bg-danger' ?>">
+                                                        <?= $movement['type'] == 'in' ? 'إدخال' : 'إخراج' ?>
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <?= htmlspecialchars($movement['fabric_name'] ?: $movement['accessory_name']) ?>
+                                                </td>
+                                                <td><strong><?= number_format($movement['quantity']) ?></strong></td>
+                                                <td><?= htmlspecialchars($movement['user_name']) ?></td>
+                                                <td><?= date('Y-m-d H:i', strtotime($movement['created_at'])) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php else: ?>
+                            <div class="text-center py-5">
+                                <i class="fas fa-inbox fa-4x text-muted mb-3"></i>
+                                <h5 class="text-muted">لا توجد حركات مخزون حتى الآن</h5>
+                                <p class="text-muted">ستظهر هنا آخر 5 حركات للمخزون</p>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+<?php include 'includes/footer.php'; ?>
+
+
+
+
+
+
+

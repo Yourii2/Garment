@@ -1,0 +1,253 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة مسحوب جديد
+if (isset($_POST['add_withdrawal'])) {
+    try {
+        $employee_id = $_POST['employee_id'];
+        $treasury_id = $_POST['treasury_id'];
+        $amount = floatval($_POST['amount']);
+        $withdrawal_type = $_POST['withdrawal_type'];
+        $notes = $_POST['notes'] ?? '';
+        
+        if ($amount <= 0) {
+            throw new Exception('يجب أن يكون المبلغ أكبر من صفر');
+        }
+        
+        $pdo->beginTransaction();
+        
+        // فحص رصيد الخزينة
+        $stmt = $pdo->prepare("SELECT current_balance FROM treasuries WHERE id = ?");
+        $stmt->execute([$treasury_id]);
+        $balance = $stmt->fetchColumn();
+        
+        if ($balance < $amount) {
+            throw new Exception('الرصيد غير كافي في الخزينة');
+        }
+        
+        // خصم من الخزينة
+        $stmt = $pdo->prepare("UPDATE treasuries SET current_balance = current_balance - ? WHERE id = ?");
+        $stmt->execute([$amount, $treasury_id]);
+        
+        // تسجيل المعاملة
+        $stmt = $pdo->prepare("
+            INSERT INTO treasury_transactions 
+            (treasury_id, amount, type, description, user_id, created_at) 
+            VALUES (?, ?, 'employee_withdrawal', ?, ?, NOW())
+        ");
+        $description = "مسحوب موظف - " . $withdrawal_type . " - " . $notes;
+        $stmt->execute([$treasury_id, $amount, $description, $_SESSION['user_id']]);
+        
+        // تسجيل في جدول مسحوبات الموظفين
+        $stmt = $pdo->prepare("
+            INSERT INTO employee_withdrawals 
+            (employee_id, treasury_id, amount, withdrawal_type, notes, approved_by, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ");
+        $stmt->execute([$employee_id, $treasury_id, $amount, $withdrawal_type, $notes, $_SESSION['user_id']]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم تسجيل المسحوب بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: employee_withdrawals.php');
+    exit;
+}
+
+// جلب الموظفين
+$stmt = $pdo->query("SELECT * FROM employees WHERE is_active = 1 ORDER BY name ASC");
+$employees = $stmt->fetchAll();
+
+// جلب الخزائن النشطة
+$stmt = $pdo->query("SELECT * FROM treasuries WHERE is_active = 1 ORDER BY name ASC");
+$treasuries = $stmt->fetchAll();
+
+// جلب المسحوبات
+$stmt = $pdo->query("
+    SELECT ew.*, e.name as employee_name, t.name as treasury_name, u.full_name as approved_by_name
+    FROM employee_withdrawals ew
+    LEFT JOIN employees e ON ew.employee_id = e.id
+    LEFT JOIN treasuries t ON ew.treasury_id = t.id
+    LEFT JOIN users u ON ew.approved_by = u.id
+    ORDER BY ew.created_at DESC
+    LIMIT 50
+");
+$withdrawals = $stmt->fetchAll();
+
+$page_title = 'مسحوبات الموظفين';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-user-tie me-2"></i>مسحوبات الموظفين
+                </h1>
+                <button type="button" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#addWithdrawalModal">
+                    <i class="fas fa-plus me-1"></i>إضافة مسحوب
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>التاريخ</th>
+                                    <th>الموظف</th>
+                                    <th>المبلغ</th>
+                                    <th>نوع المسحوب</th>
+                                    <th>الخزينة</th>
+                                    <th>المعتمد</th>
+                                    <th>ملاحظات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($withdrawals as $withdrawal): ?>
+                                    <tr>
+                                        <td><?= date('Y-m-d H:i', strtotime($withdrawal['created_at'])) ?></td>
+                                        <td><?= htmlspecialchars($withdrawal['employee_name']) ?></td>
+                                        <td>
+                                            <span class="badge bg-info fs-6">
+                                                <?= number_format($withdrawal['amount'], 2) ?> ج.م
+                                            </span>
+                                        </td>
+                                        <td><?= htmlspecialchars($withdrawal['withdrawal_type']) ?></td>
+                                        <td><?= htmlspecialchars($withdrawal['treasury_name']) ?></td>
+                                        <td><?= htmlspecialchars($withdrawal['approved_by_name']) ?></td>
+                                        <td><?= htmlspecialchars($withdrawal['notes']) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة مسحوب -->
+<div class="modal fade" id="addWithdrawalModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة مسحوب جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">الموظف *</label>
+                        <select name="employee_id" class="form-select" required>
+                            <option value="">اختر الموظف</option>
+                            <?php foreach ($employees as $employee): ?>
+                                <option value="<?= $employee['id'] ?>">
+                                    <?= htmlspecialchars($employee['name']) ?> - <?= htmlspecialchars($employee['position']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الخزينة *</label>
+                        <select name="treasury_id" class="form-select" required>
+                            <option value="">اختر الخزينة</option>
+                            <?php foreach ($treasuries as $treasury): ?>
+                                <option value="<?= $treasury['id'] ?>">
+                                    <?= htmlspecialchars($treasury['name']) ?> 
+                                    (<?= number_format($treasury['current_balance'], 2) ?> ج.م)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">المبلغ *</label>
+                        <input type="number" name="amount" class="form-control" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">نوع المسحوب *</label>
+                        <select name="withdrawal_type" class="form-select" required>
+                            <option value="">اختر النوع</option>
+                            <option value="سلفة راتب">سلفة راتب</option>
+                            <option value="مكافأة">مكافأة</option>
+                            <option value="عمولة">عمولة</option>
+                            <option value="بدل مواصلات">بدل مواصلات</option>
+                            <option value="بدل طعام">بدل طعام</option>
+                            <option value="مصاريف شخصية">مصاريف شخصية</option>
+                            <option value="أخرى">أخرى</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_withdrawal" class="btn btn-info">تسجيل المسحوب</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+<?php include '../includes/footer.php'; ?>
+</body>
+</html>
+
+</body>
+</html>

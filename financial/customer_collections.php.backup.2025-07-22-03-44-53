@@ -1,0 +1,228 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة تحصيل جديد
+if (isset($_POST['add_collection'])) {
+    try {
+        $customer_id = $_POST['customer_id'];
+        $treasury_id = $_POST['treasury_id'];
+        $amount = floatval($_POST['amount']);
+        $collection_type = $_POST['collection_type'];
+        $notes = $_POST['notes'] ?? '';
+        
+        if ($amount <= 0) {
+            throw new Exception('يجب أن يكون المبلغ أكبر من صفر');
+        }
+        
+        $pdo->beginTransaction();
+        
+        // إضافة للخزينة
+        $stmt = $pdo->prepare("UPDATE treasuries SET current_balance = current_balance + ? WHERE id = ?");
+        $stmt->execute([$amount, $treasury_id]);
+        
+        // تسجيل المعاملة
+        $stmt = $pdo->prepare("
+            INSERT INTO treasury_transactions 
+            (treasury_id, amount, type, description, user_id, created_at) 
+            VALUES (?, ?, 'customer_collection', ?, ?, NOW())
+        ");
+        $description = "تحصيل من عميل - " . $collection_type . " - " . $notes;
+        $stmt->execute([$treasury_id, $amount, $description, $_SESSION['user_id']]);
+        
+        // تسجيل في جدول تحصيلات العملاء
+        $stmt = $pdo->prepare("
+            INSERT INTO customer_collections 
+            (customer_id, treasury_id, amount, collection_type, notes, collected_by, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ");
+        $stmt->execute([$customer_id, $treasury_id, $amount, $collection_type, $notes, $_SESSION['user_id']]);
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = 'تم تسجيل التحصيل بنجاح';
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: customer_collections.php');
+    exit;
+}
+
+// جلب العملاء
+$stmt = $pdo->query("SELECT * FROM customers WHERE is_active = 1 ORDER BY name ASC");
+$customers = $stmt->fetchAll();
+
+// جلب الخزائن النشطة
+$stmt = $pdo->query("SELECT * FROM treasuries WHERE is_active = 1 ORDER BY name ASC");
+$treasuries = $stmt->fetchAll();
+
+// جلب التحصيلات
+$stmt = $pdo->query("
+    SELECT cc.*, c.name as customer_name, t.name as treasury_name, u.full_name as collected_by_name
+    FROM customer_collections cc
+    LEFT JOIN customers c ON cc.customer_id = c.id
+    LEFT JOIN treasuries t ON cc.treasury_id = t.id
+    LEFT JOIN users u ON cc.collected_by = u.id
+    ORDER BY cc.created_at DESC
+    LIMIT 50
+");
+$collections = $stmt->fetchAll();
+
+$page_title = 'تحصيل من العملاء';
+include '../includes/header.php';
+?>
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?= $page_title ?? "صفحة" ?> - <?= SYSTEM_NAME ?></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="<?= BASE_URL ?>/../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <?php include '../includes/navbar.php'; ?>
+
+    <div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-hand-holding-usd me-2"></i>تحصيل من العملاء
+                </h1>
+                <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addCollectionModal">
+                    <i class="fas fa-plus me-1"></i>إضافة تحصيل
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>التاريخ</th>
+                                    <th>العميل</th>
+                                    <th>المبلغ</th>
+                                    <th>نوع التحصيل</th>
+                                    <th>الخزينة</th>
+                                    <th>المحصل</th>
+                                    <th>ملاحظات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($collections as $collection): ?>
+                                    <tr>
+                                        <td><?= date('Y-m-d H:i', strtotime($collection['created_at'])) ?></td>
+                                        <td><?= htmlspecialchars($collection['customer_name']) ?></td>
+                                        <td>
+                                            <span class="badge bg-success fs-6">
+                                                <?= number_format($collection['amount'], 2) ?> ج.م
+                                            </span>
+                                        </td>
+                                        <td><?= htmlspecialchars($collection['collection_type']) ?></td>
+                                        <td><?= htmlspecialchars($collection['treasury_name']) ?></td>
+                                        <td><?= htmlspecialchars($collection['collected_by_name']) ?></td>
+                                        <td><?= htmlspecialchars($collection['notes']) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة تحصيل -->
+<div class="modal fade" id="addCollectionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة تحصيل جديد</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">العميل *</label>
+                        <select name="customer_id" class="form-select" required>
+                            <option value="">اختر العميل</option>
+                            <?php foreach ($customers as $customer): ?>
+                                <option value="<?= $customer['id'] ?>">
+                                    <?= htmlspecialchars($customer['name']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الخزينة *</label>
+                        <select name="treasury_id" class="form-select" required>
+                            <option value="">اختر الخزينة</option>
+                            <?php foreach ($treasuries as $treasury): ?>
+                                <option value="<?= $treasury['id'] ?>">
+                                    <?= htmlspecialchars($treasury['name']) ?> 
+                                    (<?= number_format($treasury['current_balance'], 2) ?> ج.م)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">المبلغ *</label>
+                        <input type="number" name="amount" class="form-control" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">نوع التحصيل *</label>
+                        <select name="collection_type" class="form-select" required>
+                            <option value="">اختر النوع</option>
+                            <option value="نقدي">نقدي</option>
+                            <option value="شيك">شيك</option>
+                            <option value="تحويل بنكي">تحويل بنكي</option>
+                            <option value="دفع إلكتروني">دفع إلكتروني</option>
+                            <option value="تسوية حساب">تسوية حساب</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_collection" class="btn btn-success">تسجيل التحصيل</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+<?php include '../includes/footer.php'; ?>
+</body>
+</html>

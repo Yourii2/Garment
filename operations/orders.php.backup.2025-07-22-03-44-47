@@ -1,0 +1,384 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+// معالجة إضافة طلبية جديدة
+if (isset($_POST['add_order'])) {
+    try {
+        $pdo->beginTransaction();
+        
+        $customer_name = $_POST['customer_name'];
+        $customer_phone = $_POST['customer_phone'] ?? '';
+        $customer_address = $_POST['customer_address'] ?? '';
+        $shipping_cost = $_POST['shipping_cost'] ?? 0;
+        $notes = $_POST['notes'] ?? '';
+        
+        // توليد رقم الطلبية
+        $stmt = $pdo->query("SELECT MAX(id) as max_id FROM orders");
+        $result = $stmt->fetch();
+        $newId = ($result['max_id'] ?? 0) + 1;
+        $order_number = 'ORD-' . date('Y') . '-' . str_pad($newId, 4, '0', STR_PAD_LEFT);
+        
+        // إدراج الطلبية
+        $stmt = $pdo->prepare("
+            INSERT INTO orders (order_number, customer_name, customer_phone, customer_address, shipping_cost, notes, status, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW())
+        ");
+        $stmt->execute([$order_number, $customer_name, $customer_phone, $customer_address, $shipping_cost, $notes]);
+        
+        $order_id = $pdo->lastInsertId();
+        
+        // إضافة المنتجات
+        $total_amount = 0;
+        if (!empty($_POST['products'])) {
+            foreach ($_POST['products'] as $index => $product_id) {
+                $quantity = $_POST['quantities'][$index] ?? 1;
+                $unit_price = $_POST['unit_prices'][$index] ?? 0;
+                $subtotal = $quantity * $unit_price;
+                $total_amount += $subtotal;
+                
+                $stmt = $pdo->prepare("
+                    INSERT INTO order_items (order_id, product_id, quantity, unit_price) 
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmt->execute([$order_id, $product_id, $quantity, $unit_price]);
+            }
+        }
+        
+        // حساب الإجمالي النهائي
+        $final_total = $total_amount + $shipping_cost;
+        
+        $pdo->commit();
+        $_SESSION['success_message'] = "تم إنشاء الطلبية بنجاح - رقم: {$order_number}<br>إجمالي المبلغ: " . number_format($final_total, 2) . " ج.م";
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: orders.php');
+    exit;
+}
+
+// جلب الطلبيات
+$stmt = $pdo->query("
+    SELECT o.*, 
+           COUNT(oi.id) as products_count,
+           SUM(oi.quantity) as total_quantity,
+           SUM(COALESCE(oi.quantity * oi.unit_price, 0)) as products_total,
+           COALESCE(o.shipping_cost, 0) as shipping_cost,
+           (SUM(COALESCE(oi.quantity * oi.unit_price, 0)) + COALESCE(o.shipping_cost, 0)) as order_total
+    FROM orders o
+    LEFT JOIN order_items oi ON o.id = oi.order_id
+    GROUP BY o.id
+    ORDER BY o.created_at DESC
+");
+$orders = $stmt->fetchAll();
+
+// جلب المنتجات
+$stmt = $pdo->query("SELECT * FROM products WHERE is_active = 1 ORDER BY name");
+$products = $stmt->fetchAll();
+
+$page_title = 'إدارة الطلبيات';
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-shopping-cart me-2"></i>إدارة الطلبيات
+                </h1>
+                <div class="btn-toolbar mb-2 mb-md-0">
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addOrderModal">
+                        <i class="fas fa-plus me-1"></i>إضافة طلبية جديدة
+                    </button>
+                </div>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <!-- جدول الطلبيات -->
+            <div class="card">
+                <div class="card-body">
+                    <?php if (empty($orders)): ?>
+                        <div class="text-center py-5">
+                            <i class="fas fa-list-alt fa-3x text-muted mb-3"></i>
+                            <h5>لا توجد طلبيات حتى الآن</h5>
+                            <p class="text-muted">ابدأ بإضافة طلبية جديدة</p>
+                        </div>
+                    <?php else: ?>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>رقم الطلبية</th>
+                                        <th>اسم العميل</th>
+                                        <th>الهاتف</th>
+                                        <th>عدد المنتجات</th>
+                                        <th>إجمالي المبلغ</th>
+                                        <th>الحالة</th>
+                                        <th>تاريخ الطلب</th>
+                                        <th>الإجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($orders as $order): ?>
+                                        <tr>
+                                            <td><strong><?= htmlspecialchars($order['order_number']) ?></strong></td>
+                                            <td><?= htmlspecialchars($order['customer_name']) ?></td>
+                                            <td><?= htmlspecialchars($order['customer_phone']) ?></td>
+                                            <td><?= $order['products_count'] ?> (<?= $order['total_quantity'] ?>)</td>
+                                            <td>
+                                                <strong class="text-success"><?= number_format($order['order_total'], 2) ?> ج.م</strong>
+                                                <?php if ($order['shipping_cost'] > 0): ?>
+                                                    <br><small class="text-muted">شحن: <?= number_format($order['shipping_cost'], 2) ?> ج.م</small>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <?php
+                                                $status_colors = [
+                                                    'pending' => 'warning',
+                                                    'ready' => 'info',
+                                                    'completed' => 'success',
+                                                    'cancelled' => 'danger'
+                                                ];
+                                                $status_names = [
+                                                    'pending' => 'في الانتظار',
+                                                    'ready' => 'جاهز',
+                                                    'completed' => 'مكتمل',
+                                                    'cancelled' => 'ملغي'
+                                                ];
+                                                ?>
+                                                <span class="badge bg-<?= $status_colors[$order['status']] ?? 'secondary' ?>">
+                                                    <?= $status_names[$order['status']] ?? $order['status'] ?>
+                                                </span>
+                                            </td>
+                                            <td><?= date('Y-m-d', strtotime($order['created_at'])) ?></td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-primary" onclick="viewOrder(<?= $order['id'] ?>)">
+                                                    <i class="fas fa-eye"></i>
+                                                </button>
+                                                <button class="btn btn-sm btn-outline-success" onclick="printInvoice(<?= $order['id'] ?>)">
+                                                    <i class="fas fa-print"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة طلبية جديدة -->
+<div class="modal fade" id="addOrderModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">إضافة طلبية جديدة</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" id="orderForm">
+                <div class="modal-body">
+                    <!-- بيانات العميل -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">اسم العميل <span class="text-danger">*</span></label>
+                            <input type="text" name="customer_name" class="form-control" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">رقم الهاتف</label>
+                            <input type="text" name="customer_phone" class="form-control">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">العنوان</label>
+                        <textarea name="customer_address" class="form-control" rows="2"></textarea>
+                    </div>
+                    
+                    <!-- المنتجات -->
+                    <div class="mb-3">
+                        <label class="form-label">المنتجات</label>
+                        <div id="products-container">
+                            <div class="product-row border p-3 mb-2 rounded">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <select name="products[]" class="form-select product-select" onchange="calculateTotal()">
+                                            <option value="">اختر منتج</option>
+                                            <?php foreach ($products as $product): ?>
+                                                <option value="<?= $product['id'] ?>" data-price="<?= $product['selling_price'] ?>">
+                                                    <?= htmlspecialchars($product['name']) ?> - <?= number_format($product['selling_price'], 2) ?> ج.م
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="number" name="quantities[]" class="form-control quantity-input" 
+                                               placeholder="الكمية" min="1" value="1" onchange="calculateTotal()">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <input type="number" name="unit_prices[]" class="form-control unit-price-input" 
+                                               placeholder="سعر الوحدة" step="0.01" min="0" onchange="calculateTotal()">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <input type="text" class="form-control subtotal-display" placeholder="المجموع" readonly>
+                                    </div>
+                                    <div class="col-md-1">
+                                        <button type="button" class="btn btn-danger btn-sm" onclick="removeProductRow(this)">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="addProductRow()">
+                            <i class="fas fa-plus me-1"></i>إضافة منتج آخر
+                        </button>
+                    </div>
+                    
+                    <!-- مصروفات الشحن والإجمالي -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">مصروفات الشحن</label>
+                            <div class="input-group">
+                                <input type="number" name="shipping_cost" id="shipping_cost" class="form-control" 
+                                       step="0.01" min="0" value="0" onchange="calculateTotal()">
+                                <span class="input-group-text">ج.م</span>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">إجمالي الطلبية</label>
+                            <div class="input-group">
+                                <input type="text" id="total_amount_display" class="form-control bg-success text-white fw-bold" 
+                                       style="font-size: 1.1em;" readonly>
+                                <span class="input-group-text bg-success text-white">ج.م</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">ملاحظات</label>
+                        <textarea name="notes" class="form-control" rows="2"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <div class="me-auto">
+                        <small class="text-muted">الإجمالي: <span id="footer_total" class="fw-bold text-success">0.00 ج.م</span></small>
+                    </div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_order" class="btn btn-primary">إنشاء الطلبية</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function viewOrder(orderId) {
+    window.location.href = 'view_order.php?id=' + orderId;
+}
+
+function printInvoice(orderId) {
+    window.open('print_invoice.php?id=' + orderId, '_blank', 'width=400,height=600');
+}
+
+function addProductRow() {
+    const container = document.getElementById('products-container');
+    const newRow = container.querySelector('.product-row').cloneNode(true);
+    
+    newRow.querySelectorAll('select, input').forEach(input => {
+        if (input.type === 'number') {
+            input.value = input.name.includes('quantities') ? '1' : '';
+        } else {
+            input.value = '';
+        }
+    });
+    
+    container.appendChild(newRow);
+    calculateTotal();
+}
+
+function removeProductRow(button) {
+    const container = document.getElementById('products-container');
+    if (container.children.length > 1) {
+        button.closest('.product-row').remove();
+        calculateTotal();
+    }
+}
+
+function calculateTotal() {
+    let total = 0;
+    
+    document.querySelectorAll('.product-row').forEach(row => {
+        const productSelect = row.querySelector('.product-select');
+        const quantityInput = row.querySelector('.quantity-input');
+        const unitPriceInput = row.querySelector('.unit-price-input');
+        const subtotalDisplay = row.querySelector('.subtotal-display');
+        
+        if (productSelect.value && !unitPriceInput.value) {
+            const selectedOption = productSelect.options[productSelect.selectedIndex];
+            const price = selectedOption.getAttribute('data-price') || 0;
+            unitPriceInput.value = parseFloat(price).toFixed(2);
+        }
+        
+        const quantity = parseFloat(quantityInput.value) || 0;
+        const unitPrice = parseFloat(unitPriceInput.value) || 0;
+        const subtotal = quantity * unitPrice;
+        
+        subtotalDisplay.value = subtotal.toFixed(2);
+        total += subtotal;
+    });
+    
+    const shippingCost = parseFloat(document.getElementById('shipping_cost').value) || 0;
+    const finalTotal = total + shippingCost;
+    
+    document.getElementById('total_amount_display').value = finalTotal.toFixed(2);
+    document.getElementById('footer_total').textContent = finalTotal.toFixed(2) + ' ج.م';
+}
+
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('product-select')) {
+        const row = e.target.closest('.product-row');
+        const unitPriceInput = row.querySelector('.unit-price-input');
+        const selectedOption = e.target.options[e.target.selectedIndex];
+        const price = selectedOption.getAttribute('data-price') || 0;
+        
+        if (price > 0) {
+            unitPriceInput.value = parseFloat(price).toFixed(2);
+            calculateTotal();
+        }
+    }
+});
+
+document.getElementById('addOrderModal').addEventListener('shown.bs.modal', function() {
+    calculateTotal();
+});
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
+

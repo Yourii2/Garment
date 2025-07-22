@@ -1,0 +1,328 @@
+<?php
+require_once '../config/config.php';
+checkLogin();
+
+$page_title = 'المقاسات';
+
+// معالجة إضافة مقاس جديد
+if (isset($_POST['add_size'])) {
+    try {
+        $name = cleanInput($_POST['name']);
+        $code = cleanInput($_POST['code']);
+        $description = cleanInput($_POST['description'] ?? '');
+        $sort_order = (int)($_POST['sort_order'] ?? 0);
+        
+        if (empty($name)) {
+            throw new Exception('اسم المقاس مطلوب');
+        }
+        
+        if (empty($code)) {
+            throw new Exception('كود المقاس مطلوب');
+        }
+        
+        $stmt = $pdo->prepare("INSERT INTO sizes (name, code, description, sort_order) VALUES (?, ?, ?, ?)");
+        $result = $stmt->execute([$name, $code, $description, $sort_order]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم إضافة المقاس بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sizes.php');
+    exit;
+}
+
+// معالجة تحديث مقاس
+if (isset($_POST['update_size'])) {
+    try {
+        $id = $_POST['size_id'];
+        $name = cleanInput($_POST['name']);
+        $code = cleanInput($_POST['code']);
+        $description = cleanInput($_POST['description'] ?? '');
+        $sort_order = (int)($_POST['sort_order'] ?? 0);
+        
+        if (empty($name)) {
+            throw new Exception('اسم المقاس مطلوب');
+        }
+        
+        if (empty($code)) {
+            throw new Exception('كود المقاس مطلوب');
+        }
+        
+        $stmt = $pdo->prepare("UPDATE sizes SET name = ?, code = ?, description = ?, sort_order = ? WHERE id = ?");
+        $result = $stmt->execute([$name, $code, $description, $sort_order, $id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم تحديث المقاس بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sizes.php');
+    exit;
+}
+
+// معالجة حذف مقاس
+if (isset($_POST['delete_size'])) {
+    try {
+        $id = $_POST['size_id'];
+        
+        $stmt = $pdo->prepare("DELETE FROM sizes WHERE id = ?");
+        $result = $stmt->execute([$id]);
+        
+        if ($result) {
+            $_SESSION['success_message'] = 'تم حذف المقاس بنجاح';
+        }
+        
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = 'خطأ: ' . $e->getMessage();
+    }
+    
+    header('Location: sizes.php');
+    exit;
+}
+
+// جلب المقاسات
+$stmt = $pdo->query("SELECT * FROM sizes ORDER BY sort_order, name");
+$sizes = $stmt->fetchAll();
+
+include '../includes/header.php';
+?>
+
+<div class="container-fluid">
+    <div class="row">
+        <?php include '../includes/sidebar.php'; ?>
+        
+        <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 main-content">
+            <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">
+                    <i class="fas fa-ruler text-primary me-2"></i>
+                    إدارة المقاسات
+                </h1>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addSizeModal">
+                    <i class="fas fa-plus me-2"></i>إضافة مقاس جديد
+                </button>
+            </div>
+
+            <?php if (isset($_SESSION['success_message'])): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?= $_SESSION['success_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['success_message']); ?>
+            <?php endif; ?>
+
+            <?php if (isset($_SESSION['error_message'])): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?= $_SESSION['error_message'] ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                <?php unset($_SESSION['error_message']); ?>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-list me-2"></i>قائمة المقاسات
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>الرقم</th>
+                                    <th>اسم المقاس</th>
+                                    <th>الكود</th>
+                                    <th>الوصف</th>
+                                    <th>ترتيب العرض</th>
+                                    <th>الحالة</th>
+                                    <th>الإجراءات</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($sizes)): ?>
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted py-4">
+                                            <i class="fas fa-inbox fa-3x mb-3 d-block"></i>
+                                            لا توجد مقاسات مسجلة
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($sizes as $size): ?>
+                                        <tr>
+                                            <td><?= $size['id'] ?></td>
+                                            <td><?= htmlspecialchars($size['name']) ?></td>
+                                            <td>
+                                                <span class="badge bg-secondary"><?= htmlspecialchars($size['code']) ?></span>
+                                            </td>
+                                            <td><?= htmlspecialchars($size['description'] ?? '') ?></td>
+                                            <td><?= $size['sort_order'] ?></td>
+                                            <td>
+                                                <?php if ($size['is_active']): ?>
+                                                    <span class="badge bg-success">نشط</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-danger">غير نشط</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <button type="button" class="btn btn-sm btn-warning" 
+                                                        onclick="editSize(<?= htmlspecialchars(json_encode($size)) ?>)">
+                                                    <i class="fas fa-edit"></i>
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-danger" 
+                                                        onclick="deleteSize(<?= $size['id'] ?>, '<?= htmlspecialchars($size['name']) ?>')">
+                                                    <i class="fas fa-trash"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- Modal إضافة مقاس جديد -->
+<div class="modal fade" id="addSizeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-plus me-2"></i>إضافة مقاس جديد
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">اسم المقاس *</label>
+                        <input type="text" name="name" class="form-control" required placeholder="مثال: متوسط">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">كود المقاس *</label>
+                        <input type="text" name="code" class="form-control" required placeholder="مثال: M">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الوصف</label>
+                        <textarea name="description" class="form-control" rows="3" placeholder="وصف اختياري للمقاس"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ترتيب العرض</label>
+                        <input type="number" name="sort_order" class="form-control" value="0" min="0">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="add_size" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>حفظ
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal تعديل مقاس -->
+<div class="modal fade" id="editSizeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-edit me-2"></i>تعديل المقاس
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="size_id" id="edit_size_id">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">اسم المقاس *</label>
+                        <input type="text" name="name" id="edit_name" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">كود المقاس *</label>
+                        <input type="text" name="code" id="edit_code" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">الوصف</label>
+                        <textarea name="description" id="edit_description" class="form-control" rows="3"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ترتيب العرض</label>
+                        <input type="number" name="sort_order" id="edit_sort_order" class="form-control" min="0">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="update_size" class="btn btn-warning">
+                        <i class="fas fa-save me-2"></i>تحديث
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Modal حذف مقاس -->
+<div class="modal fade" id="deleteSizeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>تأكيد الحذف
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>هل أنت متأكد من حذف المقاس: <strong id="delete_size_name"></strong>؟</p>
+                <p class="text-danger">
+                    <i class="fas fa-warning me-2"></i>
+                    لا يمكن التراجع عن هذا الإجراء
+                </p>
+            </div>
+            <div class="modal-footer">
+                <form method="POST">
+                    <input type="hidden" name="size_id" id="delete_size_id">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="submit" name="delete_size" class="btn btn-danger">
+                        <i class="fas fa-trash me-2"></i>حذف
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function editSize(size) {
+    document.getElementById('edit_size_id').value = size.id;
+    document.getElementById('edit_name').value = size.name;
+    document.getElementById('edit_code').value = size.code;
+    document.getElementById('edit_description').value = size.description || '';
+    document.getElementById('edit_sort_order').value = size.sort_order;
+    
+    new bootstrap.Modal(document.getElementById('editSizeModal')).show();
+}
+
+function deleteSize(id, name) {
+    document.getElementById('delete_size_id').value = id;
+    document.getElementById('delete_size_name').textContent = name;
+    
+    new bootstrap.Modal(document.getElementById('deleteSizeModal')).show();
+}
+</script>
+
+<?php include '../includes/footer.php'; ?>
+
+
